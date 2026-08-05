@@ -18,8 +18,20 @@ exists.
 Source: <https://github.com/joetjen/scry_test_engine_core>. Specs live
 in the separate [`scry`](https://github.com/joetjen/scry) repository;
 the behaviour this implements lives in
-[`scry_core`](https://github.com/joetjen/scry_core). Implementation
-has not started yet.
+[`scry_core`](https://github.com/joetjen/scry_core).
+
+## Usage
+
+```elixir
+conn =
+  ScryTestEngineCore.Conn.new(%{
+    ["users"] => [%{"name" => "Alice", "age" => 30}]
+  })
+
+{:ok, query} = ScryCore.parse(~s(SELECT users WHERE age > 18 { name }))
+{:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+# rows == [%{"name" => "Alice"}]
+```
 
 ## Installation
 
