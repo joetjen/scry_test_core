@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `mix.lock`: `ichor` no longer resolves into this package's own dependency tree at all (regenerated after `scry_core` moved `ichor` back to `only: [:dev, :test], runtime: false` for real -- confirmed via a from-scratch `rm -rf _build deps && mix deps.get`). This package never called anything `ichor`-specific itself; it only ever needed `scry_core`'s own compiled types, which no longer pull `ichor` in as a side effect.
+
 ### Added
 
 - Initial project scaffold: `mix.exs` (app `:scry_test_engine_core`, `{:scry_core, path: "../scry_core"}` local path dependency until scry_core is published to Hex), `.credo.exs`/`.formatter.exs`/`.tool-versions`.
