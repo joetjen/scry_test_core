@@ -20,15 +20,20 @@ defmodule ScryTestEngineCore.SeedTest do
     %{conn: Conn.seed()}
   end
 
+  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now,
+  # not `{:ok, [row()]}` -- drains it back to this suite's own
+  # long-established shape.
+  defp materialize({:ok, cursor}), do: {:ok, ScryCore.Cursor.to_list(cursor)}
+
   test "seed/0 is prefilled -- no data has to be supplied to get real rows back", %{conn: conn} do
     assert {:ok, query} = ScryCore.parse(~s(SELECT users { name }))
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
     assert length(rows) == length(Seed.users())
   end
 
   test "a plain WHERE filter over the seed users", %{conn: conn} do
     assert {:ok, query} = ScryCore.parse(~s(SELECT users WHERE status = "active" { name }))
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
     assert rows == [%{"name" => "Alice"}, %{"name" => "Bob"}, %{"name" => "Dave"}]
   end
 
@@ -41,7 +46,7 @@ defmodule ScryTestEngineCore.SeedTest do
         select: %{product_id: oi.product_id, total_qty: sum(oi.quantity)}
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert Enum.sort_by(rows, & &1["product_id"]) == [
              %{"product_id" => 1, "total_qty" => 10},
@@ -60,7 +65,7 @@ defmodule ScryTestEngineCore.SeedTest do
              SELECT users { name, SELECT orders WHERE user_id = users.id AND status = "shipped" { id } }
              """)
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert rows == [
              %{"name" => "Alice", "orders" => [%{"id" => 1}]},
@@ -86,7 +91,7 @@ defmodule ScryTestEngineCore.SeedTest do
         }
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert rows == [
              %{"name" => "Alice", "orders" => [%{"id" => 1}]},
@@ -111,7 +116,7 @@ defmodule ScryTestEngineCore.SeedTest do
         }
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert rows == [
              %{

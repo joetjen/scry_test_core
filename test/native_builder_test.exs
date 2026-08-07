@@ -34,20 +34,26 @@ defmodule ScryTestEngineCore.NativeBuilderTest do
     %{conn: conn}
   end
 
+  # `ScryCore.Executor.run/3,4` returns a lazy `ScryCore.Cursor.t()` now,
+  # not `{:ok, [row()]}` -- drains it back to this suite's own
+  # long-established shape.
+  defp materialize({:ok, cursor}), do: {:ok, ScryCore.Cursor.to_list(cursor)}
+  defp materialize({:error, _} = err), do: err
+
   test "Layer 1 (the functional API): built by hand, executed end to end", %{conn: conn} do
     query =
       ScryCore.Query.new(["users"])
       |> ScryCore.Query.where({:cmp, :gt, ["age"], 18})
       |> ScryCore.Query.select([{:field, ["name"]}])
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
     assert rows == [%{"name" => "Alice"}, %{"name" => "Carol"}]
   end
 
   test "Layer 2 (from/2): the exact same query, written as the macro DSL", %{conn: conn} do
     query = from(u in "users", where: u.age > 18, select: %{name: u.name})
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
     assert rows == [%{"name" => "Alice"}, %{"name" => "Carol"}]
   end
 
@@ -59,6 +65,7 @@ defmodule ScryTestEngineCore.NativeBuilderTest do
 
     assert {:ok, rows} =
              ScryCore.Executor.run(query, ScryTestEngineCore, conn, %{"min_age" => min_age})
+             |> materialize()
 
     assert rows == [%{"name" => "Alice"}, %{"name" => "Carol"}]
   end
@@ -71,7 +78,7 @@ defmodule ScryTestEngineCore.NativeBuilderTest do
         select: %{status: u.status, total: count(u.name)}
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
     assert rows == [%{"status" => "active", "total" => 2}]
   end
 
@@ -85,8 +92,12 @@ defmodule ScryTestEngineCore.NativeBuilderTest do
     assert {:ok, parsed} =
              ScryCore.parse(~s(SELECT users WHERE status = "active" AND age < 18 { name, age }))
 
-    assert {:ok, built_rows} = ScryCore.Executor.run(built, ScryTestEngineCore, conn)
-    assert {:ok, parsed_rows} = ScryCore.Executor.run(parsed, ScryTestEngineCore, conn)
+    assert {:ok, built_rows} =
+             ScryCore.Executor.run(built, ScryTestEngineCore, conn) |> materialize()
+
+    assert {:ok, parsed_rows} =
+             ScryCore.Executor.run(parsed, ScryTestEngineCore, conn) |> materialize()
+
     assert built_rows == parsed_rows
     assert built_rows == [%{"name" => "Bob", "age" => 17}]
   end
@@ -96,6 +107,6 @@ defmodule ScryTestEngineCore.NativeBuilderTest do
     query = from(x in "nonexistent", select: %{name: x.name})
 
     assert {:error, {:no_such_source, ["nonexistent"]}} =
-             ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+             ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
   end
 end

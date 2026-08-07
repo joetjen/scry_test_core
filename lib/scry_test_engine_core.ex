@@ -15,10 +15,9 @@ defmodule ScryTestEngineCore do
   validate real behavior end to end against a real, separate consumer
   (`ScryCore.Executor`'s own test suite already proves the contract
   works in isolation; this is the same proof against a genuinely
-  different package). `ScryCore.Executor.fetch_rows/6` still
-  materializes immediately through `ScryCore.Cursor`, so callers see
-  no behavior difference at all -- only that this engine is no longer
-  handing back its own internal list by reference.
+  different package). `ScryCore.Executor.run/3,4` itself now returns
+  `{:ok, ScryCore.Cursor.t()}`, not a materialized list -- see
+  `ScryCore.Cursor.to_list/1` in the usage example below.
 
   ## Usage
 
@@ -27,7 +26,8 @@ defmodule ScryTestEngineCore do
       })
 
       {:ok, query} = # ... parse + build a %ScryCore.Query{}
-      ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+      {:ok, cursor} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+      rows = ScryCore.Cursor.to_list(cursor)
   """
 
   @behaviour ScryCore.EngineBehaviour

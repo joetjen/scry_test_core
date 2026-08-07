@@ -4,7 +4,9 @@
 
 ### Changed
 
-- `ScryTestEngineCore.fetch/2` now returns a genuine `Stream` (`Stream.map(rows, & &1)`) instead of the raw stored list directly, following `scry_core`'s own widened `EngineBehaviour.fetch/2` contract (any `Enumerable.t()`, not just a materialized list -- see `ScryCore.Cursor`'s own moduledoc for the full reasoning). Dogfoods the new contract through a real, separate downstream package, not just `scry_core`'s own test suite. `ScryCore.Executor.fetch_rows/6` still materializes immediately at the fetch boundary either way, so this is a behavior-preserving change -- confirmed by the full existing test suite passing unmodified, and by manually running both `mix scry.query` and `mix scry.iex` against it.
+- `ScryTestEngineCore.fetch/2` now returns a genuine `Stream` (`Stream.map(rows, & &1)`) instead of the raw stored list directly, following `scry_core`'s own widened `EngineBehaviour.fetch/2` contract (any `Enumerable.t()`, not just a materialized list -- see `ScryCore.Cursor`'s own moduledoc for the full reasoning). Dogfoods the new contract through a real, separate downstream package, not just `scry_core`'s own test suite.
+
+- `scry_core`'s own `ScryCore.Executor.run/3,4` now returns `{:ok, ScryCore.Cursor.t()}` instead of `{:ok, [row()]}` (bounding `Executor`'s own memory to what a query actually needs, rather than always materializing an entire source). `mix scry.query`/`mix scry.iex` both drain the returned cursor via `ScryCore.Cursor.to_list/1` before printing, folding a lazily-raised `ScryCore.Executor.QueryError` back into the same error-formatting path an eager `{:error, reason}` already used. `README.md`'s own usage examples and `ScryTestEngineCore`'s own moduledoc updated to match. Every existing test asserting on `Executor.run`'s own return value now drains the returned `Cursor` first (a shared per-file `materialize/1` helper) -- confirmed to still pass unmodified otherwise.
 
 ### Fixed
 
