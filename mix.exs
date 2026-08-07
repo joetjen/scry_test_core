@@ -80,7 +80,14 @@ defmodule ScryTestEngineCore.MixProject do
 
       # === DEVELOPMENT TOOLING ===
       # Mix, and Hex are built-in (no deps needed)
-      {:ex_doc, "~> 0.40", only: [:dev], runtime: false}
+      {:ex_doc, "~> 0.40", only: [:dev], runtime: false},
+
+      # `mix scry.bench` -- this whole package is test/integration
+      # tooling, never a production build in its own right, so unlike
+      # `scry_core`'s own `ichor` (which had to stay out of a real
+      # downstream production build), there's no equivalent boundary to
+      # protect here; a plain, unscoped dependency is the right shape.
+      {:exqlite, "~> 0.30"}
       # ExDoc is invoked via `MIX_ENV=dev mix docs`
     ]
   end

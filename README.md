@@ -94,6 +94,25 @@ prints a reminder of this at startup. `mix help scry.iex` has the full
 usage, including why (OTP's own interactive-shell line editing, not
 something this task implements itself).
 
+### `mix scry.bench` -- measure `ScryCore.Executor`'s real memory behavior
+
+Generates a real SQLite database and reports the actual process-memory
+delta `ScryCore.Executor.run/4` incurs for a point lookup, a flat
+aggregate over the whole table, and both a low- and a high-cardinality
+`GROUP BY` -- the same measurement that originally motivated bounding
+`Executor`'s own memory to what a query actually needs, kept here as a
+repeatable regression tool rather than a one-off scratch script:
+
+```console
+$ mix scry.bench
+$ mix scry.bench --users 1000000
+```
+
+`mix help scry.bench` has the full usage, including how to read the
+two numbers each measurement reports (an *immediate* delta, and a
+*settled* delta after an explicit GC -- the one that actually answers
+"did this retain the whole source in memory").
+
 ## Installation
 
 ```elixir
