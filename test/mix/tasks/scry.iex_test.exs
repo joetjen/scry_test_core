@@ -3,10 +3,17 @@ defmodule Mix.Tasks.Scry.IexTest do
   `mix scry.iex` -- a query only runs once it parses, a leading blank
   line at the primary prompt is a no-op, a blank line mid-buffer forces
   a stuck (never-going-to-parse) query through and shows the real
-  error instead of hanging forever, and the prompt returns to normal
-  afterward for the next query. `ExUnit.CaptureIO.capture_io/2`'s own
-  `input` argument feeds simulated stdin -- `IO.gets/1` sees it exactly
-  as if it were typed, `:eof` once it's exhausted.
+  error instead of hanging forever, the prompt returns to normal
+  afterward for the next query, and the `iex -S mix scry.iex` startup
+  hint shows under plain `mix test` (no real `iex` session here
+  either). `ExUnit.CaptureIO.capture_io/2`'s own `input` argument feeds
+  simulated stdin -- `IO.gets/1` sees it exactly as if it were typed,
+  `:eof` once it's exhausted. What this suite can't reach at all: real
+  Up/Down arrow-key history recall, which needs a genuine pty and
+  OTP's own interactive-shell group leader attached to it -- verified
+  separately, by hand, against a real pty (not here; `ExUnit.CaptureIO`
+  redirects through a `StringIO`, not a tty, so there's no group leader
+  for it to attach to regardless of what's fed as input).
   """
 
   use ExUnit.Case, async: false
@@ -54,5 +61,12 @@ defmodule Mix.Tasks.Scry.IexTest do
     output = capture_io("", fn -> Mix.Tasks.Scry.Iex.run([]) end)
 
     assert output =~ "scry> "
+  end
+
+  test "outside a real iex session, a startup note points at `iex -S mix scry.iex` for history" do
+    refute IEx.started?()
+    output = capture_io("", fn -> Mix.Tasks.Scry.Iex.run([]) end)
+
+    assert output =~ "iex -S mix scry.iex"
   end
 end

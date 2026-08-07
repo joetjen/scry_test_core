@@ -80,8 +80,13 @@ scry>
 
 A query only runs once it parses -- pressing Enter mid-query keeps the
 prompt open (`...>`) for the next line, rather than erroring
-immediately. Ctrl+D exits. `mix help scry.iex` has the full usage,
-including the one real limitation worth knowing before relying on it.
+immediately. Ctrl+D exits.
+
+For Up/Down arrow-key history (recalling and re-running a previous
+query), run it as `iex -S mix scry.iex` instead -- plain `mix scry.iex`
+prints a reminder of this at startup. `mix help scry.iex` has the full
+usage, including why (OTP's own interactive-shell line editing, not
+something this task implements itself).
 
 ## Installation
 

@@ -21,6 +21,25 @@ defmodule Mix.Tasks.Scry.Iex do
   the same "don't judge it until it's whole" posture `iex` itself has
   for an unfinished expression.
 
+  **Up/Down arrow history, for real**: run it as `iex -S mix scry.iex`
+  instead of plain `mix scry.iex`. Verified directly (a real pty, not
+  assumed): the Up/Down/Left/Right line editing and history recall
+  every terminal user expects isn't something this task implements --
+  it's OTP's own interactive-shell group leader (`group`/`edlin`, the
+  exact machinery `iex`'s own expression history already runs on),
+  which is only attached to stdin under an actual interactive Erlang
+  shell. Plain `mix scry.iex` boots the VM with `-noshell` (no group
+  leader, no editing at all -- an arrow key lands as a literal `^[[A`
+  escape sequence, confirmed empirically, not guessed), while `iex -S
+  mix scry.iex` boots a real `iex` session first (full editing/history
+  active) and then runs this task's own loop *inside* it -- an ordinary
+  process under that same group leader gets the exact same treatment
+  `iex`'s own prompt does, with zero code of this module's own
+  involved. Plain `mix scry.iex` prints a one-line note about this at
+  startup (gated on `IEx.started?/0` being `false`, so the note itself
+  disappears once run the `iex -S mix scry.iex` way); everything else
+  about this task works identically either way.
+
   One real limitation, worth stating rather than papering over:
   `ScryCore`'s own grammar is a plain backtracking PEG parser (`Ichor`),
   with no incremental/error-recovery parse mode to explain *why* a
@@ -45,7 +64,16 @@ defmodule Mix.Tasks.Scry.Iex do
   @impl Mix.Task
   def run(_argv) do
     Mix.Task.run("app.start")
+    maybe_hint_about_history()
     loop("")
+  end
+
+  defp maybe_hint_about_history do
+    unless IEx.started?() do
+      IO.puts(
+        "(no arrow-key history here -- run `iex -S mix scry.iex` instead of `mix scry.iex` for that)"
+      )
+    end
   end
 
   defp loop(buffer) do

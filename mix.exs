@@ -25,7 +25,18 @@ defmodule ScryTestEngineCore.MixProject do
       docs: docs(),
       aliases: aliases(),
       test_coverage: [tool: ExCoveralls],
-      dialyzer: [plt_add_apps: [:mix]]
+      # :iex -- `mix scry.iex`'s own `IEx.started?/0` check needs
+      # Dialyzer's own PLT to know the function exists. Deliberately
+      # *not* also in `extra_applications` below -- confirmed
+      # empirically that starting the `:iex` OTP application (which
+      # declaring it there would trigger, via `Mix.Task.run(
+      # "app.start")`) flips `IEx.started?/0` to `true` all by itself,
+      # with no real interactive session involved at all, defeating
+      # the whole point of checking it. `IEx`'s own module is already
+      # on the code path without starting its application (part of
+      # the Elixir installation itself), so no `extra_applications`
+      # entry is needed for the call to actually work at runtime.
+      dialyzer: [plt_add_apps: [:mix, :iex]]
     ]
   end
 
