@@ -29,9 +29,14 @@ conn =
   })
 
 {:ok, query} = ScryCore.parse(~s(SELECT users WHERE age > 18 { name }))
-{:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+{:ok, cursor} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+rows = ScryCore.Cursor.to_list(cursor)
 # rows == [%{"name" => "Alice"}]
 ```
+
+`ScryCore.Executor.run/3,4` returns a lazy `ScryCore.Cursor.t()`, not a
+materialized list -- see `scry_core`'s own `ScryCore.Cursor` moduledoc
+for the full pull-based API (`next/1`, `take/2`, `skip/1,2`, `close/1`).
 
 ### Prefilled seed data
 
@@ -51,7 +56,8 @@ conn = ScryTestEngineCore.Conn.seed()
   SELECT users { name, SELECT orders WHERE user_id = users.id AND status = "shipped" { id } }
   """)
 
-{:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+{:ok, cursor} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+rows = ScryCore.Cursor.to_list(cursor)
 # rows == [%{"name" => "Alice", "orders" => [%{"id" => 1}]}, ...]
 ```
 

@@ -19,9 +19,15 @@ defmodule ScryTestEngineCoreTest do
     %{conn: conn}
   end
 
+  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now,
+  # not `{:ok, [row()]}` -- drains it back to this suite's own
+  # long-established shape.
+  defp materialize({:ok, cursor}), do: {:ok, ScryCore.Cursor.to_list(cursor)}
+  defp materialize({:error, _} = err), do: err
+
   test "a full pipeline run: query text -> parse -> execute -> real static rows", %{conn: conn} do
     assert {:ok, query} = ScryCore.parse(~s(SELECT users WHERE age > 18 { name }))
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert rows == [%{"name" => "Alice"}, %{"name" => "Carol"}]
   end
@@ -30,7 +36,7 @@ defmodule ScryTestEngineCoreTest do
     assert {:ok, query} =
              ScryCore.parse(~s(SELECT users WHERE status = "active" AND age < 18 { name, age }))
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert rows == [%{"name" => "Bob", "age" => 17}]
   end
@@ -39,7 +45,7 @@ defmodule ScryTestEngineCoreTest do
     assert {:ok, query} =
              ScryCore.parse(~s(SELECT users { name, SELECT orders WHERE total > 50 { id } }))
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
 
     assert rows == [
              %{"name" => "Alice", "orders" => [%{"id" => 1}]},
@@ -52,6 +58,6 @@ defmodule ScryTestEngineCoreTest do
     assert {:ok, query} = ScryCore.parse(~s(SELECT nonexistent { name }))
 
     assert {:error, {:no_such_source, ["nonexistent"]}} =
-             ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+             ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
   end
 end

@@ -113,10 +113,23 @@ defmodule Mix.Tasks.Scry.Iex do
   end
 
   defp execute(query) do
-    case ScryCore.Executor.run(query, ScryTestEngineCore, ScryTestEngineCore.Conn.seed()) do
-      {:ok, rows} -> IO.inspect(rows, pretty: true, limit: :infinity)
+    with {:ok, cursor} <-
+           ScryCore.Executor.run(query, ScryTestEngineCore, ScryTestEngineCore.Conn.seed()),
+         {:ok, rows} <- materialize(cursor) do
+      IO.inspect(rows, pretty: true, limit: :infinity)
+    else
       {:error, reason} -> IO.puts(format_error(reason))
     end
+  end
+
+  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now --
+  # this REPL always wants the full result set printed at once, and a
+  # lazily-raised `ScryCore.Executor.QueryError` needs to fold back into
+  # the same `{:error, reason}` shape the `with` above already handles.
+  defp materialize(cursor) do
+    {:ok, ScryCore.Cursor.to_list(cursor)}
+  rescue
+    e in ScryCore.Executor.QueryError -> {:error, e.reason}
   end
 
   # Same formatting `mix scry.query` uses -- a parse failure is one (or

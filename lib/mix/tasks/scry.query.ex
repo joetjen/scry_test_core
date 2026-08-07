@@ -34,12 +34,24 @@ defmodule Mix.Tasks.Scry.Query do
 
     with {:ok, source} <- fetch_query_source(switches, args),
          {:ok, query} <- ScryCore.parse(source),
-         {:ok, rows} <-
-           ScryCore.Executor.run(query, ScryTestEngineCore, ScryTestEngineCore.Conn.seed()) do
+         {:ok, cursor} <-
+           ScryCore.Executor.run(query, ScryTestEngineCore, ScryTestEngineCore.Conn.seed()),
+         {:ok, rows} <- materialize(cursor) do
       IO.inspect(rows, pretty: true, limit: :infinity)
     else
       {:error, reason} -> Mix.raise("scry.query failed: #{format_error(reason)}")
     end
+  end
+
+  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now --
+  # this task always wants the full result set, and a lazily-raised
+  # `ScryCore.Executor.QueryError` needs to fold back into the same
+  # `{:error, reason}` shape `fetch_query_source/2`/`ScryCore.parse/1`
+  # already use, for one shared error-formatting path below.
+  defp materialize(cursor) do
+    {:ok, ScryCore.Cursor.to_list(cursor)}
+  rescue
+    e in ScryCore.Executor.QueryError -> {:error, e.reason}
   end
 
   # A parse failure is one (or a list of) %Ichor.Error{} -- formatted
