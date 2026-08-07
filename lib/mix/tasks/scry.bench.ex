@@ -21,6 +21,7 @@ defmodule Mix.Tasks.Scry.Bench do
       $ mix scry.bench --users 1000000
       $ mix scry.bench --users 1000000 --iterations 10
       $ mix scry.bench --compare-ets
+      $ mix scry.bench --yes
 
   `--users` (default 10,000,000) controls the generated scale; `orders`
   is always twice that. `--iterations` (default 3) controls how many
@@ -51,6 +52,19 @@ defmodule Mix.Tasks.Scry.Bench do
   get away from; running it here would just reproduce the original,
   already-diagnosed problem instead of measuring the fix.
 
+  ## Before it runs
+
+  At the default scale this can take several minutes (mostly database
+  generation) and uses real CPU/memory/disk while it runs, so this task
+  asks for confirmation before doing any of that work -- `--yes` (or
+  `-y`) skips the prompt, for scripted/non-interactive use. Once
+  confirmed, generation prints its own running progress (rows written
+  so far, updated in place) rather than going silent until done, and
+  every benchmarked query prints a line as each of its warmup/timed
+  runs starts and finishes -- the concrete fix for this task's own
+  original failure mode, a run that looked hung with no way to tell it
+  apart from one that was just slow.
+
   ## What's reported, per query
 
   - **Rows returned** -- the output row count. A `GROUP BY` query
@@ -70,8 +84,10 @@ defmodule Mix.Tasks.Scry.Bench do
     retained) distinction the memory-only version of this task always
     reported.
 
-  A summary table across every query (and backend, with `--compare-ets`)
-  runs at the end for an at-a-glance comparison, followed by the
+  A boxed summary table across every query (and backend, with
+  `--compare-ets`) runs at the end for an at-a-glance comparison --
+  plus, with `--compare-ets`, a second table converting the raw numbers
+  into a plain "N.NNx faster" reading per query -- followed by the
   benchmark's own total wall-clock time (database/table generation
   included).
   """
@@ -81,6 +97,7 @@ defmodule Mix.Tasks.Scry.Bench do
   @default_users 10_000_000
   @default_iterations 3
   @batch_size 10_000
+  @progress_interval 250_000
 
   @impl Mix.Task
   def run(argv) do
@@ -88,28 +105,52 @@ defmodule Mix.Tasks.Scry.Bench do
 
     {switches, _args} =
       OptionParser.parse!(argv,
-        strict: [users: :integer, iterations: :integer, compare_ets: :boolean]
+        strict: [users: :integer, iterations: :integer, compare_ets: :boolean, yes: :boolean],
+        aliases: [y: :yes]
       )
 
     user_count = switches[:users] || @default_users
     iterations = switches[:iterations] || @default_iterations
     compare_ets? = switches[:compare_ets] || false
     order_count = user_count * 2
-    mid_id = div(user_count, 2)
 
+    if switches[:yes] || confirm?(user_count, order_count, compare_ets?) do
+      run_benchmark(user_count, order_count, iterations, compare_ets?)
+    else
+      IO.puts("Aborted -- nothing was generated or run.")
+    end
+  end
+
+  defp confirm?(user_count, order_count, compare_ets?) do
+    scale_note = if compare_ets?, do: " (roughly doubled again by --compare-ets)", else: ""
+
+    IO.puts("""
+
+    This will generate #{format_int(user_count)} users / #{format_int(order_count)} orders#{scale_note} \
+    in a temporary SQLite database and run several queries against them. At the default scale \
+    this can take several minutes and uses real CPU/memory/disk while it runs.
+    """)
+
+    case IO.gets("Continue? [y/N] ") do
+      answer when is_binary(answer) ->
+        String.downcase(String.trim(answer)) in ["y", "yes"]
+
+      _eof_or_error ->
+        false
+    end
+  end
+
+  defp run_benchmark(user_count, order_count, iterations, compare_ets?) do
+    mid_id = div(user_count, 2)
     db_path = Path.join(System.tmp_dir!(), "scry_test_core_bench.db")
     File.rm(db_path)
 
     {run_us, _} =
       :timer.tc(fn ->
-        IO.write(
-          "Generating #{format_int(user_count)} users / #{format_int(order_count)} orders..."
-        )
-
         {gen_us, {sqlite_conn, ets_conn}} =
           :timer.tc(fn -> generate(db_path, user_count, order_count, compare_ets?) end)
 
-        IO.puts(" done in #{format_duration(gen_us)}.")
+        IO.puts("\nDatabase ready in #{format_duration(gen_us)}.")
 
         try do
           backend_label = if compare_ets?, do: " per query/backend", else: " per query"
@@ -117,7 +158,7 @@ defmodule Mix.Tasks.Scry.Bench do
           IO.puts(
             "\n#{format_int(user_count)} users / #{format_int(order_count)} orders -- " <>
               "#{iterations} timed iterations (+1 untimed warmup)#{backend_label}, through " <>
-              "Scry.Core.Executor.run/4\n"
+              "Scry.Core.Executor.run/4"
           )
 
           queries = [
@@ -141,21 +182,19 @@ defmodule Mix.Tasks.Scry.Bench do
           results =
             for {short_label, label, query_text} <- queries,
                 {backend_name, engine, conn} <- backends do
-              full_short_label =
-                if compare_ets?, do: "#{short_label} [#{backend_name}]", else: short_label
-
-              benchmark(label, full_short_label, iterations, fn ->
+              benchmark(label, short_label, backend_name, compare_ets?, iterations, fn ->
                 run_query(query_text, engine, conn)
               end)
             end
 
-          print_summary_table(results)
+          print_summary_table(results, compare_ets?)
+          if compare_ets?, do: print_speedup_table(results)
         after
           Scry.Engine.Exqlite.Conn.close(sqlite_conn)
         end
       end)
 
-    IO.puts("Total benchmark wall-clock time (generation included): #{format_duration(run_us)}")
+    IO.puts("\nDone in #{format_duration(run_us)} (generation included).")
     File.rm(db_path)
   end
 
@@ -167,23 +206,37 @@ defmodule Mix.Tasks.Scry.Bench do
 
   # ---- Benchmark runner ----------------------------------------------------
 
-  defp benchmark(label, short_label, iterations, fun) do
-    # Untimed -- primes the OS-level file-page cache so the first
-    # *timed* iteration isn't penalized for a cold-cache disk read none
-    # of the others will pay either.
-    fun.()
+  defp benchmark(label, short_label, backend_name, compare_ets?, iterations, fun) do
+    header = if compare_ets?, do: "#{label} [#{backend_name}]", else: label
+    IO.puts("\nRunning: #{header}")
 
-    timings = for _ <- 1..iterations, do: :timer.tc(fun)
+    IO.write("  warmup...")
+    {warmup_us, _} = :timer.tc(fun)
+    IO.puts(" #{format_duration(warmup_us)}")
+
+    timings =
+      for i <- 1..iterations do
+        IO.write("  iteration #{i}/#{iterations}...")
+        {us, rows} = :timer.tc(fun)
+        IO.puts(" #{format_duration(us)}")
+        {us, rows}
+      end
+
     durations_us = Enum.map(timings, &elem(&1, 0))
     rows = timings |> List.first() |> elem(1)
 
+    IO.write("  measuring memory...")
+    mem = measure_memory(fun)
+    IO.puts(" done")
+
     result = %{
+      query: short_label,
+      backend: backend_name,
       label: label,
-      short_label: short_label,
       iterations: iterations,
       rows_returned: length(rows),
       stats: duration_stats(durations_us),
-      mem: measure_memory(fun)
+      mem: mem
     }
 
     print_result(result)
@@ -236,15 +289,12 @@ defmodule Mix.Tasks.Scry.Bench do
   end
 
   defp print_result(%{
-         label: label,
          iterations: iterations,
          rows_returned: rows_returned,
          stats: s,
          mem: m
        }) do
     IO.puts("""
-
-    #{label}
       rows returned: #{format_int(rows_returned)} (#{iterations} timed iterations, +1 untimed warmup)
       duration:      avg #{format_duration(s.avg_us)} (min #{format_duration(s.min_us)}, median #{format_duration(s.median_us)}, max #{format_duration(s.max_us)}, stddev #{format_duration(s.stddev_us)})
                      total #{format_duration(s.total_us)} across all #{iterations} timed iterations
@@ -252,40 +302,111 @@ defmodule Mix.Tasks.Scry.Bench do
     """)
   end
 
-  defp print_summary_table(results) do
-    columns = [
-      {"query [backend]", 30, :left},
-      {"rows returned", 13, :right},
-      {"avg duration", 12, :right},
-      {"settled mem", 12, :right}
-    ]
+  # ---- Summary tables (box-drawn) -------------------------------------
+
+  defp print_summary_table(results, compare_ets?) do
+    columns =
+      if compare_ets? do
+        [
+          {"query", 20, :left},
+          {"backend", 8, :left},
+          {"rows returned", 13, :right},
+          {"avg duration", 12, :right},
+          {"settled mem", 12, :right}
+        ]
+      else
+        [
+          {"query", 30, :left},
+          {"rows returned", 13, :right},
+          {"avg duration", 12, :right},
+          {"settled mem", 12, :right}
+        ]
+      end
+
+    rows =
+      Enum.map(results, fn r ->
+        base = [{r.query, elem(hd(columns), 1), :left}]
+
+        base ++
+          if(compare_ets?, do: [{r.backend, 8, :left}], else: []) ++
+          [
+            {format_int(r.rows_returned), 13, :right},
+            {format_duration(r.stats.avg_us), 12, :right},
+            {format_mb(r.mem.settled_bytes), 12, :right}
+          ]
+      end)
 
     IO.puts("\nSummary")
-    IO.puts(render_row(columns))
-    IO.puts(String.duplicate("-", Enum.sum(Enum.map(columns, fn {_, w, _} -> w + 3 end))))
-
-    Enum.each(results, fn r ->
-      cells = [
-        {r.short_label, 30, :left},
-        {format_int(r.rows_returned), 13, :right},
-        {format_duration(r.stats.avg_us), 12, :right},
-        {format_mb(r.mem.settled_bytes), 12, :right}
-      ]
-
-      IO.puts(render_row(cells))
-    end)
+    print_box(columns, rows)
   end
 
-  defp render_row(cells) do
+  defp print_speedup_table(results) do
+    columns = [
+      {"query", 22, :left},
+      {"sqlite avg", 12, :right},
+      {"ets avg", 12, :right},
+      {"result", 20, :right}
+    ]
+
+    rows =
+      results
+      |> Enum.group_by(& &1.query)
+      |> Enum.map(fn {query, entries} -> {query, speedup_row(query, entries, columns)} end)
+      |> Enum.reject(fn {_query, row} -> is_nil(row) end)
+      |> Enum.map(fn {_query, row} -> row end)
+
+    IO.puts("\nETS vs. SQLite")
+    print_box(columns, rows)
+  end
+
+  defp speedup_row(query, entries, columns) do
+    with %{stats: %{avg_us: sqlite_us}} <- Enum.find(entries, &(&1.backend == "sqlite")),
+         %{stats: %{avg_us: ets_us}} <- Enum.find(entries, &(&1.backend == "ets")) do
+      {faster, ratio} =
+        if sqlite_us >= ets_us,
+          do: {"ets", safe_ratio(sqlite_us, ets_us)},
+          else: {"sqlite", safe_ratio(ets_us, sqlite_us)}
+
+      [
+        {query, elem(Enum.at(columns, 0), 1), :left},
+        {format_duration(sqlite_us), 12, :right},
+        {format_duration(ets_us), 12, :right},
+        {"#{Float.round(ratio, 2)}x (#{faster})", 20, :right}
+      ]
+    else
+      _ -> nil
+    end
+  end
+
+  defp safe_ratio(_numerator, 0), do: 0.0
+  defp safe_ratio(numerator, denominator), do: numerator / denominator
+
+  defp print_box(columns, rows) do
+    IO.puts(box_border(columns, "┌", "┬", "┐"))
+    IO.puts(box_row(Enum.map(columns, fn {name, w, align} -> {name, w, align} end)))
+    IO.puts(box_border(columns, "├", "┼", "┤"))
+    Enum.each(rows, &IO.puts(box_row(&1)))
+    IO.puts(box_border(columns, "└", "┴", "┘"))
+  end
+
+  defp box_border(columns, left, mid, right) do
+    columns
+    |> Enum.map(fn {_, w, _} -> String.duplicate("─", w + 2) end)
+    |> Enum.join(mid)
+    |> then(&(left <> &1 <> right))
+  end
+
+  defp box_row(cells) do
     cells
     |> Enum.map(fn
-      {text, width, :left} ->
-        text |> to_string() |> String.slice(0, width) |> String.pad_trailing(width)
+      {text, w, :left} ->
+        " " <> (text |> to_string() |> String.slice(0, w) |> String.pad_trailing(w)) <> " "
 
-      {text, width, :right} ->
-        String.pad_leading(to_string(text), width)
+      {text, w, :right} ->
+        " " <> (text |> to_string() |> String.slice(0, w) |> String.pad_leading(w)) <> " "
     end)
-    |> Enum.join(" | ")
+    |> Enum.join("│")
+    |> then(&("│" <> &1 <> "│"))
   end
 
   defp format_duration(us) when us >= 1_000_000, do: "#{Float.round(us / 1_000_000, 3)} s"
@@ -313,7 +434,9 @@ defmodule Mix.Tasks.Scry.Bench do
   # generated rows, in one pass -- batched (`@batch_size` rows at a
   # time via `Stream.chunk_every/2`, never the whole `user_count`/
   # `order_count` materialized as a single Elixir list) so peak memory
-  # during generation itself doesn't scale with `--users`.
+  # during generation itself doesn't scale with `--users`. Prints
+  # progress as it goes (`report_progress/3`) rather than going silent
+  # until done -- this task's own original failure mode.
   defp generate(db_path, user_count, order_count, compare_ets?) do
     {:ok, sqlite_conn} = Scry.Engine.Exqlite.Conn.open(db_path)
     db = sqlite_conn.db
@@ -333,10 +456,15 @@ defmodule Mix.Tasks.Scry.Bench do
         Scry.Engine.ETS.Conn.new(%{}, keys: [{["users"], "id"}, {["orders"], "id"}])
       end
 
+    IO.puts("Generating #{format_int(user_count)} users...")
     ets_conn = gen_users(db, ets_conn, user_count)
+
+    IO.puts("Generating #{format_int(order_count)} orders...")
     ets_conn = gen_orders(db, ets_conn, order_count, user_count)
 
+    IO.write("Creating indexes...")
     :ok = Exqlite.Sqlite3.execute(db, "CREATE INDEX idx_orders_user_id ON orders(user_id)")
+    IO.puts(" done.")
 
     {sqlite_conn, ets_conn}
   end
@@ -366,9 +494,11 @@ defmodule Mix.Tasks.Scry.Bench do
           :done = Exqlite.Sqlite3.step(db, stmt)
         end)
 
+        report_progress(List.last(chunk), count)
         put_batch(ets_conn, ["users"], rows)
       end)
 
+    IO.write("\n")
     :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
     Exqlite.Sqlite3.release(db, stmt)
     ets_conn
@@ -392,12 +522,26 @@ defmodule Mix.Tasks.Scry.Bench do
           :done = Exqlite.Sqlite3.step(db, stmt)
         end)
 
+        report_progress(List.last(chunk), count)
         put_batch(ets_conn, ["orders"], rows)
       end)
 
+    IO.write("\n")
     :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
     Exqlite.Sqlite3.release(db, stmt)
     ets_conn
+  end
+
+  # `\r` (carriage return, no newline) repaints the same terminal line
+  # instead of scrolling once per batch -- an ordinary progress-bar
+  # technique. Always reports the final `done == total` batch
+  # regardless of `@progress_interval`, so a table smaller than one
+  # interval still shows 100% rather than nothing at all.
+  defp report_progress(done, total) do
+    if rem(done, @progress_interval) < @batch_size or done == total do
+      percent = Float.round(done / total * 100, 1)
+      IO.write("\r  #{format_int(done)} / #{format_int(total)} (#{percent}%)")
+    end
   end
 
   defp put_batch(nil, _source, _rows), do: nil

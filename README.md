@@ -131,7 +131,19 @@ $ mix scry.bench
 $ mix scry.bench --users 1000000
 $ mix scry.bench --users 1000000 --iterations 10
 $ mix scry.bench --compare-ets
+$ mix scry.bench --yes
 ```
+
+At the default scale this can take several minutes and uses real
+CPU/memory/disk, so the task asks for confirmation before doing any of
+that work; `--yes` (or `-y`) skips the prompt for scripted use. Once
+confirmed, it never goes silent: database generation prints its own
+progress in place as rows are written, and every benchmarked query
+prints a line as each warmup/timed run starts and finishes -- so a slow
+run and a hung one are never impossible to tell apart. Results print as
+boxed summary tables, plus, with `--compare-ets`, a second table
+converting the raw numbers into a plain "N.NNx faster" reading per
+query.
 
 `--compare-ets` additionally generates a comparably-sized `Scry.Engine.
 ETS` dataset and runs every query against it too, side by side with the
