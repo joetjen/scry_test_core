@@ -55,6 +55,18 @@ conn = ScryTestEngineCore.Conn.seed()
 # rows == [%{"name" => "Alice", "orders" => [%{"id" => 1}]}, ...]
 ```
 
+### `mix scry.query` -- try a query from the command line
+
+Runs a query against `Conn.seed/0`'s own dataset and prints the
+resulting rows, without writing any Elixir code first:
+
+```console
+$ mix scry.query 'SELECT users WHERE status = "active" { name }'
+$ mix scry.query --file path/to/query.scry
+```
+
+`mix help scry.query` has the full usage.
+
 ## Installation
 
 ```elixir
