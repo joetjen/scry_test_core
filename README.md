@@ -67,6 +67,22 @@ $ mix scry.query --file path/to/query.scry
 
 `mix help scry.query` has the full usage.
 
+### `mix scry.iex` -- an interactive, `iex`-like query prompt
+
+```console
+$ mix scry.iex
+scry> SELECT users
+...>   WHERE age > 18
+...>   { name }
+[%{"name" => "Alice"}, ...]
+scry>
+```
+
+A query only runs once it parses -- pressing Enter mid-query keeps the
+prompt open (`...>`) for the next line, rather than erroring
+immediately. Ctrl+D exits. `mix help scry.iex` has the full usage,
+including the one real limitation worth knowing before relying on it.
+
 ## Installation
 
 ```elixir
