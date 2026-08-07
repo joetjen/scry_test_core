@@ -3,16 +3,27 @@ defmodule Mix.Tasks.Scry.Bench do
 
   @moduledoc """
   Generates a real SQLite database (`users`/`orders`) and reports real
-  timing and memory numbers for `Scry.Core.Executor.run/4` against a
-  handful of representative queries -- a point lookup, a flat aggregate
-  over the whole table, a low-cardinality `GROUP BY`, and a genuinely
-  high-cardinality one -- served through `Scry.Engine.Exqlite`, the
-  real adapter package (`fetch/3` `WHERE`-clause pushdown, batched
-  `multi_step/3` fetching, a connection opened once and reused across
-  every query) rather than an ad-hoc engine module duplicated inside
-  this task. The memory side of this is the same measurement technique
-  (and the same finding) that originally motivated bounding `Executor`'s
-  own memory to what a query actually needs (see `scry_core`'s own
+  timing and memory numbers for a handful of representative queries --
+  a point lookup, a flat aggregate over the whole table, a low-
+  cardinality `GROUP BY`, and a genuinely high-cardinality one -- run
+  three ways side by side:
+
+    * **`raw sql`** -- the equivalent query issued directly against the
+      open SQLite connection via `Exqlite.Sqlite3`, bypassing Scry
+      entirely. The baseline: however fast SQLite itself can answer
+      this, with none of Scry's own parsing/execution overhead.
+    * **`sqlite`** -- the same query, as Scry query text, through
+      `Scry.Core.Executor.run/4` and `Scry.Engine.Exqlite` (real
+      `fetch/3` `WHERE`-clause pushdown, batched `multi_step/3`
+      fetching, a connection opened once and reused across every
+      query) -- answers "how much does going through Scry actually
+      cost, on top of the same database".
+    * **`ets`** (only with `--compare-ets`) -- the same query again,
+      against a comparably-sized `Scry.Engine.ETS` dataset instead.
+
+  The memory side of this is the same measurement technique (and the
+  same finding) that originally motivated bounding `Executor`'s own
+  memory to what a query actually needs (see `scry_core`'s own
   `CHANGELOG.md`) -- kept here, against a real embedded database rather
   than a scratch script, as a repeatable regression tool for future
   work, not a one-off proof.
@@ -36,14 +47,11 @@ defmodule Mix.Tasks.Scry.Bench do
   `--compare-ets` additionally generates a comparably-sized `Scry.
   Engine.ETS` dataset (the same rows, loaded into real ETS tables
   during the same generation pass) and runs every query against it
-  too, printed side by side with the SQLite numbers -- a direct,
-  measured comparison between the two real pushdown-capable engines at
-  the same scale, not just against each other in the abstract. Off by
-  default: it roughly doubles both generation time and peak memory
-  (a real ETS-backed copy of the whole dataset, on top of the SQLite
-  file), and the concrete problem this task exists to catch (a point
-  lookup degrading into a full-table scan) is already fully visible
-  from the SQLite numbers alone.
+  too. Off by default: it roughly doubles both generation time and
+  peak memory (a real ETS-backed copy of the whole dataset, on top of
+  the SQLite file), and the concrete problem this task exists to catch
+  (a point lookup degrading into a full-table scan) is already fully
+  visible from the `raw sql`/`sqlite` numbers alone.
 
   `Scry.Test.Core.Conn.in_memory/1` is deliberately never part of this
   comparison at benchmark scale -- loading `--users` rows into a plain
@@ -84,12 +92,12 @@ defmodule Mix.Tasks.Scry.Bench do
     retained) distinction the memory-only version of this task always
     reported.
 
-  A boxed summary table across every query (and backend, with
-  `--compare-ets`) runs at the end for an at-a-glance comparison --
-  plus, with `--compare-ets`, a second table converting the raw numbers
-  into a plain "N.NNx faster" reading per query -- followed by the
-  benchmark's own total wall-clock time (database/table generation
-  included).
+  A boxed summary table across every query/backend runs at the end,
+  followed by a "Scry overhead" table converting the raw `raw sql` vs.
+  `sqlite` durations into a plain "N.NNx" reading per query -- and,
+  with `--compare-ets`, a second comparison table for `sqlite` vs.
+  `ets` -- then the benchmark's own total wall-clock time (database/
+  table generation included).
   """
 
   use Mix.Task
@@ -153,42 +161,49 @@ defmodule Mix.Tasks.Scry.Bench do
         IO.puts("\nDatabase ready in #{format_duration(gen_us)}.")
 
         try do
-          backend_label = if compare_ets?, do: " per query/backend", else: " per query"
-
           IO.puts(
             "\n#{format_int(user_count)} users / #{format_int(order_count)} orders -- " <>
-              "#{iterations} timed iterations (+1 untimed warmup)#{backend_label}, through " <>
-              "Scry.Core.Executor.run/4"
+              "#{iterations} timed iterations (+1 untimed warmup) per query/backend, through " <>
+              "Scry.Core.Executor.run/4 (or raw SQL, for the \"raw sql\" backend)"
           )
 
           queries = [
             {"point lookup", "WHERE id = <mid> LIMIT 1 (a real, non-adversarial point lookup)",
-             ~s[SELECT users WHERE id = #{mid_id} LIMIT 1 { name }]},
+             ~s[SELECT users WHERE id = #{mid_id} LIMIT 1 { name }],
+             "SELECT name FROM users WHERE id = #{mid_id} LIMIT 1"},
             {"avg(age), no GROUP BY",
              "no LIMIT, flat avg(age) over the whole users table (O(1) groups)",
-             "SELECT users { a: avg(age) }"},
+             "SELECT users { a: avg(age) }", "SELECT AVG(age) FROM users"},
             {"GROUP BY status", "GROUP BY status (3 distinct groups) -- count + avg(age)",
-             "SELECT users GROUP BY status { status, n: count(id), a: avg(age) }"},
+             "SELECT users GROUP BY status { status, n: count(id), a: avg(age) }",
+             "SELECT status, COUNT(id), AVG(age) FROM users GROUP BY status"},
             {"GROUP BY user_id",
              "GROUP BY user_id on orders (~#{format_int(user_count)} distinct groups -- " <>
                "adversarial: memory scales with group count, not row count)",
-             "SELECT orders GROUP BY user_id { user_id, total: sum(total) }"}
+             "SELECT orders GROUP BY user_id { user_id, total: sum(total) }",
+             "SELECT user_id, SUM(total) FROM orders GROUP BY user_id"}
           ]
 
           backends =
-            [{"sqlite", Scry.Engine.Exqlite, sqlite_conn}] ++
-              if(compare_ets?, do: [{"ets", Scry.Engine.ETS, ets_conn}], else: [])
+            [
+              {"raw sql", :raw, sqlite_conn.db},
+              {"sqlite", :scry, {Scry.Engine.Exqlite, sqlite_conn}}
+            ] ++
+              if(compare_ets?, do: [{"ets", :scry, {Scry.Engine.ETS, ets_conn}}], else: [])
 
           results =
-            for {short_label, label, query_text} <- queries,
-                {backend_name, engine, conn} <- backends do
-              benchmark(label, short_label, backend_name, compare_ets?, iterations, fn ->
-                run_query(query_text, engine, conn)
-              end)
+            for {short_label, label, query_text, raw_sql} <- queries,
+                {backend_name, kind, target} <- backends do
+              fun = query_fun(kind, target, query_text, raw_sql)
+              benchmark(label, short_label, backend_name, iterations, fun)
             end
 
-          print_summary_table(results, compare_ets?)
-          if compare_ets?, do: print_speedup_table(results)
+          print_summary_table(results)
+          print_comparison_table(results, "raw sql", "sqlite", "Scry overhead (raw SQL vs. Scry)")
+
+          if compare_ets? do
+            print_comparison_table(results, "sqlite", "ets", "ETS vs. SQLite (both via Scry)")
+          end
         after
           Scry.Engine.Exqlite.Conn.close(sqlite_conn)
         end
@@ -198,17 +213,47 @@ defmodule Mix.Tasks.Scry.Bench do
     File.rm(db_path)
   end
 
+  defp query_fun(:scry, {engine, conn}, query_text, _raw_sql) do
+    fn -> run_query(query_text, engine, conn) end
+  end
+
+  defp query_fun(:raw, db, _query_text, raw_sql) do
+    fn -> run_query_raw(db, raw_sql) end
+  end
+
   defp run_query(query_text, engine, conn) do
     {:ok, query} = Scry.Core.parse(query_text)
     {:ok, cursor} = Scry.Core.Executor.run(query, engine, conn)
     Scry.Core.Cursor.to_list(cursor)
   end
 
+  # Bypasses Scry entirely -- the raw-SQL baseline `sqlite`'s own
+  # duration gets compared against, to answer "how much does Scry
+  # itself cost on top of the same database". Uses `multi_step/3`
+  # (batched), the same primitive `Scry.Engine.Exqlite` itself is
+  # built on, so the comparison isolates Scry's own overhead rather
+  # than also comparing two different fetching strategies.
+  defp run_query_raw(db, sql) do
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, sql)
+
+    try do
+      fetch_all_raw(db, stmt)
+    after
+      Exqlite.Sqlite3.release(db, stmt)
+    end
+  end
+
+  defp fetch_all_raw(db, stmt) do
+    case Exqlite.Sqlite3.multi_step(db, stmt, 2_000) do
+      {:rows, rows} -> rows ++ fetch_all_raw(db, stmt)
+      {:done, rows} -> rows
+    end
+  end
+
   # ---- Benchmark runner ----------------------------------------------------
 
-  defp benchmark(label, short_label, backend_name, compare_ets?, iterations, fun) do
-    header = if compare_ets?, do: "#{label} [#{backend_name}]", else: label
-    IO.puts("\nRunning: #{header}")
+  defp benchmark(label, short_label, backend_name, iterations, fun) do
+    IO.puts("\nRunning: #{label} [#{backend_name}]")
 
     IO.write("  warmup...")
     {warmup_us, _} = :timer.tc(fun)
@@ -304,73 +349,62 @@ defmodule Mix.Tasks.Scry.Bench do
 
   # ---- Summary tables (box-drawn) -------------------------------------
 
-  defp print_summary_table(results, compare_ets?) do
-    columns =
-      if compare_ets? do
-        [
-          {"query", 20, :left},
-          {"backend", 8, :left},
-          {"rows returned", 13, :right},
-          {"avg duration", 12, :right},
-          {"settled mem", 12, :right}
-        ]
-      else
-        [
-          {"query", 30, :left},
-          {"rows returned", 13, :right},
-          {"avg duration", 12, :right},
-          {"settled mem", 12, :right}
-        ]
-      end
+  defp print_summary_table(results) do
+    columns = [
+      {"query", 20, :left},
+      {"backend", 8, :left},
+      {"rows returned", 13, :right},
+      {"avg duration", 12, :right},
+      {"settled mem", 12, :right}
+    ]
 
     rows =
       Enum.map(results, fn r ->
-        base = [{r.query, elem(hd(columns), 1), :left}]
-
-        base ++
-          if(compare_ets?, do: [{r.backend, 8, :left}], else: []) ++
-          [
-            {format_int(r.rows_returned), 13, :right},
-            {format_duration(r.stats.avg_us), 12, :right},
-            {format_mb(r.mem.settled_bytes), 12, :right}
-          ]
+        [
+          {r.query, 20, :left},
+          {r.backend, 8, :left},
+          {format_int(r.rows_returned), 13, :right},
+          {format_duration(r.stats.avg_us), 12, :right},
+          {format_mb(r.mem.settled_bytes), 12, :right}
+        ]
       end)
 
     IO.puts("\nSummary")
     print_box(columns, rows)
   end
 
-  defp print_speedup_table(results) do
+  defp print_comparison_table(results, baseline, candidate, title) do
     columns = [
       {"query", 22, :left},
-      {"sqlite avg", 12, :right},
-      {"ets avg", 12, :right},
+      {baseline, 12, :right},
+      {candidate, 12, :right},
       {"result", 20, :right}
     ]
 
     rows =
       results
       |> Enum.group_by(& &1.query)
-      |> Enum.map(fn {query, entries} -> {query, speedup_row(query, entries, columns)} end)
-      |> Enum.reject(fn {_query, row} -> is_nil(row) end)
-      |> Enum.map(fn {_query, row} -> row end)
+      |> Enum.map(fn {query, entries} -> comparison_row(query, entries, baseline, candidate) end)
+      |> Enum.reject(&is_nil/1)
 
-    IO.puts("\nETS vs. SQLite")
-    print_box(columns, rows)
+    if rows != [] do
+      IO.puts("\n#{title}")
+      print_box(columns, rows)
+    end
   end
 
-  defp speedup_row(query, entries, columns) do
-    with %{stats: %{avg_us: sqlite_us}} <- Enum.find(entries, &(&1.backend == "sqlite")),
-         %{stats: %{avg_us: ets_us}} <- Enum.find(entries, &(&1.backend == "ets")) do
+  defp comparison_row(query, entries, baseline, candidate) do
+    with %{stats: %{avg_us: baseline_us}} <- Enum.find(entries, &(&1.backend == baseline)),
+         %{stats: %{avg_us: candidate_us}} <- Enum.find(entries, &(&1.backend == candidate)) do
       {faster, ratio} =
-        if sqlite_us >= ets_us,
-          do: {"ets", safe_ratio(sqlite_us, ets_us)},
-          else: {"sqlite", safe_ratio(ets_us, sqlite_us)}
+        if baseline_us >= candidate_us,
+          do: {candidate, safe_ratio(baseline_us, candidate_us)},
+          else: {baseline, safe_ratio(candidate_us, baseline_us)}
 
       [
-        {query, elem(Enum.at(columns, 0), 1), :left},
-        {format_duration(sqlite_us), 12, :right},
-        {format_duration(ets_us), 12, :right},
+        {query, 22, :left},
+        {format_duration(baseline_us), 12, :right},
+        {format_duration(candidate_us), 12, :right},
         {"#{Float.round(ratio, 2)}x (#{faster})", 20, :right}
       ]
     else
@@ -435,7 +469,7 @@ defmodule Mix.Tasks.Scry.Bench do
   # time via `Stream.chunk_every/2`, never the whole `user_count`/
   # `order_count` materialized as a single Elixir list) so peak memory
   # during generation itself doesn't scale with `--users`. Prints
-  # progress as it goes (`report_progress/3`) rather than going silent
+  # progress as it goes (`report_progress/2`) rather than going silent
   # until done -- this task's own original failure mode.
   defp generate(db_path, user_count, order_count, compare_ets?) do
     {:ok, sqlite_conn} = Scry.Engine.Exqlite.Conn.open(db_path)

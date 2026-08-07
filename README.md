@@ -111,17 +111,20 @@ something this task implements itself).
 
 ### `mix scry.bench` -- benchmark `Scry.Core.Executor`'s real speed and memory
 
-Generates a real SQLite database and reports real timing and memory
-numbers for `Scry.Core.Executor.run/4` against a point lookup, a flat
+Generates a real SQLite database and runs a point lookup, a flat
 aggregate over the whole table, and both a low- and a high-cardinality
-`GROUP BY`, served through `Scry.Engine.Exqlite` (real `fetch/3`
-`WHERE`-clause pushdown, batched fetching, a connection opened once and
-reused across every query). For each query: rows returned, duration
-(avg/min/median/max/stddev across several timed iterations, plus
-total), and memory (an *immediate* delta and a *settled* delta after an
-explicit GC -- the one that actually answers "did this retain the
-whole source in memory"), plus a summary table across every query at
-the end. The memory side of this is the same measurement that
+`GROUP BY` three ways side by side: `raw sql` (the equivalent query
+issued directly against the connection via `Exqlite.Sqlite3`,
+bypassing Scry entirely -- the baseline), `sqlite` (the same query as
+Scry query text, through `Scry.Core.Executor.run/4` and `Scry.Engine.
+Exqlite`, real `fetch/3` pushdown included -- answers "what does going
+through Scry actually cost"), and, with `--compare-ets`, `ets` (the
+same query again against a comparably-sized `Scry.Engine.ETS`
+dataset). For each query/backend: rows returned, duration (avg/min/
+median/max/stddev across several timed iterations, plus total), and
+memory (an *immediate* delta and a *settled* delta after an explicit
+GC -- the one that actually answers "did this retain the whole source
+in memory"). The memory side of this is the same measurement that
 originally motivated bounding `Executor`'s own memory to what a query
 actually needs -- kept here as a repeatable benchmark/regression tool
 rather than a one-off scratch script:
@@ -141,19 +144,20 @@ confirmed, it never goes silent: database generation prints its own
 progress in place as rows are written, and every benchmarked query
 prints a line as each warmup/timed run starts and finishes -- so a slow
 run and a hung one are never impossible to tell apart. Results print as
-boxed summary tables, plus, with `--compare-ets`, a second table
-converting the raw numbers into a plain "N.NNx faster" reading per
-query.
+a boxed summary table, followed by a "Scry overhead" table converting
+the raw `raw sql` vs. `sqlite` durations into a plain "N.NNx" reading
+per query -- and, with `--compare-ets`, a second comparison table for
+`sqlite` vs. `ets`.
 
 `--compare-ets` additionally generates a comparably-sized `Scry.Engine.
-ETS` dataset and runs every query against it too, side by side with the
-SQLite numbers -- off by default (it roughly doubles generation time
-and peak memory, and the concrete problem this task exists to catch --
-a point lookup degrading into a full-table scan -- is already fully
-visible from the SQLite numbers alone). `mix help scry.bench` has the
-full usage, including exactly what each reported number means and why
-`Scry.Test.Core.Conn.in_memory/1` is deliberately never part of this
-comparison at benchmark scale.
+ETS` dataset and runs every query against it too -- off by default (it
+roughly doubles generation time and peak memory, and the concrete
+problem this task exists to catch -- a point lookup degrading into a
+full-table scan -- is already fully visible from the `raw sql`/`sqlite`
+numbers alone). `mix help scry.bench` has the full usage, including
+exactly what each reported number means and why `Scry.Test.Core.Conn.
+in_memory/1` is deliberately never part of this comparison at
+benchmark scale.
 
 ## Installation
 
