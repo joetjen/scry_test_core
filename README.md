@@ -33,6 +33,28 @@ conn =
 # rows == [%{"name" => "Alice"}]
 ```
 
+### Prefilled seed data
+
+`Conn.seed/0` gives you a realistic, multi-table dataset --
+`users`/`products`/`orders`/`order_items`, related by real foreign-key-
+shaped fields (`orders.user_id`, `order_items.order_id`/`product_id`)
+-- instead of an empty connection, for exploring or testing against
+something with real relationships to correlate across without hand-
+authoring your own fixture rows first. `ScryTestEngineCore.Seed`'s own
+moduledoc documents the exact shape of every table.
+
+```elixir
+conn = ScryTestEngineCore.Conn.seed()
+
+{:ok, query} =
+  ScryCore.parse(~s"""
+  SELECT users { name, SELECT orders WHERE user_id = users.id AND status = "shipped" { id } }
+  """)
+
+{:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
+# rows == [%{"name" => "Alice", "orders" => [%{"id" => 1}]}, ...]
+```
+
 ## Installation
 
 ```elixir
