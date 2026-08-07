@@ -1,43 +1,52 @@
-defmodule ScryTestEngineCore.SeedTest do
+defmodule Scry.Test.Core.SeedTest do
   @moduledoc """
-  `ScryTestEngineCore.Conn.seed/0` -- confirms the prefilled dataset
-  (`ScryTestEngineCore.Seed`) is real, queryable data with real
-  relationships to correlate across, not just present-but-inert fixture
-  rows. Covers a plain filter, `GROUP BY`/an aggregate, and,
+  `Scry.Test.Core.Conn.in_memory/0`'s own default dataset
+  (`Scry.Test.Core.Seed`) -- confirms it's real, queryable data with
+  real relationships to correlate across, not just present-but-inert
+  fixture rows. Covers a plain filter, `GROUP BY`/an aggregate, and,
   specifically, a nested `SELECT` correlating across two of the
   dataset's own foreign-key-related tables -- both through query text
-  and through the native builder (`ScryCore.Query.from/2`), confirming
-  both front ends see the same relationships in the same data.
+  and through the native builder (`Scry.Core.Query.from/2`), confirming
+  both front ends see the same relationships in the same data. Run
+  against the in-memory backend specifically; `parity_test.exs` is
+  where the same queries get run against all three backends and
+  compared.
   """
 
   use ExUnit.Case, async: true
 
-  alias ScryTestEngineCore.{Conn, Seed}
+  alias Scry.Core.{Cursor, Executor}
+  alias Scry.Test.Core.{Conn, Seed}
 
-  import ScryCore.Query
+  import Scry.Core.Query
 
   setup do
-    %{conn: Conn.seed()}
+    {engine, conn} = Conn.in_memory()
+    %{engine: engine, conn: conn}
   end
 
-  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now,
+  # `Scry.Core.Executor.run/3` returns a lazy `Scry.Core.Cursor.t()` now,
   # not `{:ok, [row()]}` -- drains it back to this suite's own
   # long-established shape.
-  defp materialize({:ok, cursor}), do: {:ok, ScryCore.Cursor.to_list(cursor)}
+  defp materialize({:ok, cursor}), do: {:ok, Cursor.to_list(cursor)}
 
-  test "seed/0 is prefilled -- no data has to be supplied to get real rows back", %{conn: conn} do
-    assert {:ok, query} = ScryCore.parse(~s(SELECT users { name }))
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
+  test "in_memory/0 is prefilled -- no data has to be supplied to get real rows back", %{
+    engine: engine,
+    conn: conn
+  } do
+    assert {:ok, query} = Scry.Core.parse(~s(SELECT users { name }))
+    assert {:ok, rows} = Executor.run(query, engine, conn) |> materialize()
     assert length(rows) == length(Seed.users())
   end
 
-  test "a plain WHERE filter over the seed users", %{conn: conn} do
-    assert {:ok, query} = ScryCore.parse(~s(SELECT users WHERE status = "active" { name }))
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
+  test "a plain WHERE filter over the seed users", %{engine: engine, conn: conn} do
+    assert {:ok, query} = Scry.Core.parse(~s(SELECT users WHERE status = "active" { name }))
+    assert {:ok, rows} = Executor.run(query, engine, conn) |> materialize()
     assert rows == [%{"name" => "Alice"}, %{"name" => "Bob"}, %{"name" => "Dave"}]
   end
 
   test "GROUP BY + an aggregate over order_items, real quantities summed per product", %{
+    engine: engine,
     conn: conn
   } do
     query =
@@ -46,7 +55,7 @@ defmodule ScryTestEngineCore.SeedTest do
         select: %{product_id: oi.product_id, total_qty: sum(oi.quantity)}
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
+    assert {:ok, rows} = Executor.run(query, engine, conn) |> materialize()
 
     assert Enum.sort_by(rows, & &1["product_id"]) == [
              %{"product_id" => 1, "total_qty" => 10},
@@ -58,14 +67,15 @@ defmodule ScryTestEngineCore.SeedTest do
   end
 
   test "a nested SELECT correlating users to their own shipped orders, via query text", %{
+    engine: engine,
     conn: conn
   } do
     assert {:ok, query} =
-             ScryCore.parse(~s"""
+             Scry.Core.parse(~s"""
              SELECT users { name, SELECT orders WHERE user_id = users.id AND status = "shipped" { id } }
              """)
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
+    assert {:ok, rows} = Executor.run(query, engine, conn) |> materialize()
 
     assert rows == [
              %{"name" => "Alice", "orders" => [%{"id" => 1}]},
@@ -76,7 +86,8 @@ defmodule ScryTestEngineCore.SeedTest do
            ]
   end
 
-  test "the same nested correlation via the native builder (ScryCore.Query.from/2)", %{
+  test "the same nested correlation via the native builder (Scry.Core.Query.from/2)", %{
+    engine: engine,
     conn: conn
   } do
     query =
@@ -91,7 +102,7 @@ defmodule ScryTestEngineCore.SeedTest do
         }
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
+    assert {:ok, rows} = Executor.run(query, engine, conn) |> materialize()
 
     assert rows == [
              %{"name" => "Alice", "orders" => [%{"id" => 1}]},
@@ -102,7 +113,10 @@ defmodule ScryTestEngineCore.SeedTest do
            ]
   end
 
-  test "two levels of nesting -- orders, and each order's own items", %{conn: conn} do
+  test "two levels of nesting -- orders, and each order's own items", %{
+    engine: engine,
+    conn: conn
+  } do
     query =
       from(o in "orders",
         where: o.id == 1,
@@ -116,7 +130,7 @@ defmodule ScryTestEngineCore.SeedTest do
         }
       )
 
-    assert {:ok, rows} = ScryCore.Executor.run(query, ScryTestEngineCore, conn) |> materialize()
+    assert {:ok, rows} = Executor.run(query, engine, conn) |> materialize()
 
     assert rows == [
              %{
@@ -127,10 +141,5 @@ defmodule ScryTestEngineCore.SeedTest do
                ]
              }
            ]
-  end
-
-  test "new/1 is unaffected -- still empty by default, custom data still works exactly as before" do
-    assert Conn.new().data == %{}
-    assert Conn.new(%{["x"] => [%{"a" => 1}]}).data == %{["x"] => [%{"a" => 1}]}
   end
 end

@@ -2,14 +2,15 @@ defmodule Mix.Tasks.Scry.Query do
   @shortdoc "Runs a Scry query against this package's own seed data"
 
   @moduledoc """
-  Runs a query against `ScryTestEngineCore.Conn.seed/0`'s own
-  prefilled dataset (`users`/`products`/`orders`/`order_items`) and
-  prints the resulting rows -- for trying the query language out, or
-  spot-checking a specific query's own behavior, without writing any
-  Elixir code first.
+  Runs a query against `Scry.Test.Core.Conn`'s own prefilled dataset
+  (`users`/`products`/`orders`/`order_items`) and prints the resulting
+  rows -- for trying the query language out, or spot-checking a
+  specific query's own behavior, without writing any Elixir code
+  first.
 
       $ mix scry.query "SELECT users WHERE age > 18 { name }"
       $ mix scry.query --file path/to/query.scry
+      $ mix scry.query --backend ets "SELECT users WHERE id = 1 { name }"
 
   Exactly one of a query-text argument or `--file` is required; giving
   both, or neither, is a usage error. Several positional arguments
@@ -18,24 +19,39 @@ defmodule Mix.Tasks.Scry.Query do
   reliable habit (`{`/`}` and other punctuation can confuse some
   shells when left unquoted), but this covers the simple case too.
 
-  Always runs against `Conn.seed/0` -- there's no flag for supplying
-  different data here; write a short `.exs` script (`Conn.new/1` +
-  `ScryCore.Executor.run/3`, this package's own `README.md` has the
-  shape) for anything needing a different dataset.
+  `--backend` picks which `Scry.Test.Core.Conn` constructor serves the
+  query -- `in_memory` (the default, `Scry.Engine.InMemory`, no
+  pushdown), `ets` (`Scry.Engine.ETS`, real key-lookup pushdown), or
+  `sqlite` (`Scry.Engine.Exqlite`, real SQL pushdown). All three share
+  the exact same seed data (`Scry.Test.Core.Seed`), so the same query
+  returns the same rows regardless of which one is picked -- this flag
+  changes *how* the answer is produced, never *what* it is.
+
+  Always runs against the picked backend's own default seed data --
+  there's no flag for supplying different data here; write a short
+  `.exs` script (`Scry.Test.Core.Conn.in_memory/1` + `Scry.Core.
+  Executor.run/3`, this package's own `README.md` has the shape) for
+  anything needing a different dataset.
   """
 
   use Mix.Task
+
+  @backends %{
+    "in_memory" => &Scry.Test.Core.Conn.in_memory/0,
+    "ets" => &Scry.Test.Core.Conn.ets/0,
+    "sqlite" => &Scry.Test.Core.Conn.sqlite/0
+  }
 
   @impl Mix.Task
   def run(argv) do
     Mix.Task.run("app.start")
 
-    {switches, args} = OptionParser.parse!(argv, strict: [file: :string])
+    {switches, args} = OptionParser.parse!(argv, strict: [file: :string, backend: :string])
 
     with {:ok, source} <- fetch_query_source(switches, args),
-         {:ok, query} <- ScryCore.parse(source),
-         {:ok, cursor} <-
-           ScryCore.Executor.run(query, ScryTestEngineCore, ScryTestEngineCore.Conn.seed()),
+         {:ok, {engine, conn}} <- fetch_backend(switches),
+         {:ok, query} <- Scry.Core.parse(source),
+         {:ok, cursor} <- Scry.Core.Executor.run(query, engine, conn),
          {:ok, rows} <- materialize(cursor) do
       IO.inspect(rows, pretty: true, limit: :infinity)
     else
@@ -43,15 +59,24 @@ defmodule Mix.Tasks.Scry.Query do
     end
   end
 
-  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now --
+  defp fetch_backend(switches) do
+    name = switches[:backend] || "in_memory"
+
+    case Map.fetch(@backends, name) do
+      {:ok, constructor} -> {:ok, constructor.()}
+      :error -> {:error, "unknown --backend #{name} (expected in_memory, ets, or sqlite)"}
+    end
+  end
+
+  # `Scry.Core.Executor.run/3` returns a lazy `Scry.Core.Cursor.t()` now --
   # this task always wants the full result set, and a lazily-raised
-  # `ScryCore.Executor.QueryError` needs to fold back into the same
-  # `{:error, reason}` shape `fetch_query_source/2`/`ScryCore.parse/1`
+  # `Scry.Core.Executor.QueryError` needs to fold back into the same
+  # `{:error, reason}` shape `fetch_query_source/2`/`Scry.Core.parse/1`
   # already use, for one shared error-formatting path below.
   defp materialize(cursor) do
-    {:ok, ScryCore.Cursor.to_list(cursor)}
+    {:ok, Scry.Core.Cursor.to_list(cursor)}
   rescue
-    e in ScryCore.Executor.QueryError -> {:error, e.reason}
+    e in Scry.Core.Executor.QueryError -> {:error, e.reason}
   end
 
   # A parse failure is one (or a list of) %Ichor.Error{} -- formatted

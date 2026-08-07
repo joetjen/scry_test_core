@@ -1,76 +1,90 @@
-# scry_test_engine_core
+# scry_test_core
 
-A static, in-memory implementation of
-[`scry_core`](https://github.com/joetjen/scry_core)'s
-`ScryCore.EngineBehaviour` — for testing the composition/execution
-pipeline (grammar → `ScryCore.Actions` → `%ScryCore.Query{}` →
-`ScryCore.Executor`) end to end, without any real external data
-source. Not for production use.
+Shared test/benchmark fixtures for
+[`scry_core`](https://github.com/joetjen/scry_core): one seed dataset
+(`Scry.Test.Core.Seed`), servable through three real `Scry.Core.
+EngineBehaviour` backends via `Scry.Test.Core.Conn`:
 
-Named `scry_test_engine_core`, not `scry_engine_..._<driver>`, to keep
-this class of package visually distinct from a real adapter at a
-glance — the naming convention is `scry_test_engine_<kind>`; this one
-is `core`'s own, since `scry_core` itself needs one before any real
-kind library does. A future kind library (`scry_time_series`, ...)
-gets its own `scry_test_engine_time_series` alongside it, once it
-exists.
+- `Conn.in_memory/1` → [`scry_engine_inmemory`](https://github.com/joetjen/scry_engine_inmemory)'s `Scry.Engine.InMemory` (no pushdown at all)
+- `Conn.ets/1` → [`scry_engine_ets`](https://github.com/joetjen/scry_engine_ets)'s `Scry.Engine.ETS` (real O(1) key-lookup pushdown)
+- `Conn.sqlite/1` → [`scry_engine_exqlite`](https://github.com/joetjen/scry_engine_exqlite)'s `Scry.Engine.Exqlite` (real SQL `WHERE`-clause pushdown)
 
-Source: <https://github.com/joetjen/scry_test_engine_core>. Specs live
-in the separate [`scry`](https://github.com/joetjen/scry) repository;
-the behaviour this implements lives in
+Plus `mix scry.query`/`mix scry.iex`/`mix scry.bench` for exercising
+them. Not for production use.
+
+Named `scry_test_core`, not `scry_engine_..._<driver>`, to keep this
+class of package visually distinct from a real adapter at a glance --
+the naming convention is `scry_test_<kind>`; this one is `core`'s own,
+since `scry_core` itself needs one before any real kind library does.
+A future kind library (`scry_time_series`, ...) gets its own
+`scry_test_time_series` alongside it.
+
+Source: <https://github.com/joetjen/scry_test_core>. Specs live in the
+separate [`scry`](https://github.com/joetjen/scry) repository; the
+behaviour every backend implements lives in
 [`scry_core`](https://github.com/joetjen/scry_core).
 
 ## Usage
 
 ```elixir
-conn =
-  ScryTestEngineCore.Conn.new(%{
+{engine, conn} =
+  Scry.Test.Core.Conn.in_memory(%{
     ["users"] => [%{"name" => "Alice", "age" => 30}]
   })
 
-{:ok, query} = ScryCore.parse(~s(SELECT users WHERE age > 18 { name }))
-{:ok, cursor} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
-rows = ScryCore.Cursor.to_list(cursor)
+{:ok, query} = Scry.Core.parse(~s(SELECT users WHERE age > 18 { name }))
+{:ok, cursor} = Scry.Core.Executor.run(query, engine, conn)
+rows = Scry.Core.Cursor.to_list(cursor)
 # rows == [%{"name" => "Alice"}]
 ```
 
-`ScryCore.Executor.run/3,4` returns a lazy `ScryCore.Cursor.t()`, not a
-materialized list -- see `scry_core`'s own `ScryCore.Cursor` moduledoc
-for the full pull-based API (`next/1`, `take/2`, `skip/1,2`, `close/1`).
+Swap `in_memory/1` for `ets/1` or `sqlite/1` above to run the exact
+same query against a different backend -- no other code changes.
+`Scry.Core.Executor.run/3,4` returns a lazy `Scry.Core.Cursor.t()`, not
+a materialized list -- see `scry_core`'s own `Scry.Core.Cursor`
+moduledoc for the full pull-based API (`next/1`, `take/2`, `skip/1,2`,
+`close/1`).
 
 ### Prefilled seed data
 
-`Conn.seed/0` gives you a realistic, multi-table dataset --
-`users`/`products`/`orders`/`order_items`, related by real foreign-key-
-shaped fields (`orders.user_id`, `order_items.order_id`/`product_id`)
--- instead of an empty connection, for exploring or testing against
-something with real relationships to correlate across without hand-
-authoring your own fixture rows first. `ScryTestEngineCore.Seed`'s own
-moduledoc documents the exact shape of every table.
+Every `Conn` constructor defaults to `Scry.Test.Core.Seed`'s own
+realistic, multi-table dataset -- `users`/`products`/`orders`/
+`order_items`, related by real foreign-key-shaped fields
+(`orders.user_id`, `order_items.order_id`/`product_id`) -- instead of
+an empty connection, for exploring or testing against something with
+real relationships to correlate across without hand-authoring your own
+fixture rows first. `Scry.Test.Core.Seed`'s own moduledoc documents the
+exact shape of every table; the same dataset backs all three engines,
+so a query run against each is directly comparable (see
+`test/scry/test/core/parity_test.exs`'s own genuine 3-way parity
+tests).
 
 ```elixir
-conn = ScryTestEngineCore.Conn.seed()
+{engine, conn} = Scry.Test.Core.Conn.in_memory()
 
 {:ok, query} =
-  ScryCore.parse(~s"""
+  Scry.Core.parse(~s"""
   SELECT users { name, SELECT orders WHERE user_id = users.id AND status = "shipped" { id } }
   """)
 
-{:ok, cursor} = ScryCore.Executor.run(query, ScryTestEngineCore, conn)
-rows = ScryCore.Cursor.to_list(cursor)
+{:ok, cursor} = Scry.Core.Executor.run(query, engine, conn)
+rows = Scry.Core.Cursor.to_list(cursor)
 # rows == [%{"name" => "Alice", "orders" => [%{"id" => 1}]}, ...]
 ```
 
 ### `mix scry.query` -- try a query from the command line
 
-Runs a query against `Conn.seed/0`'s own dataset and prints the
-resulting rows, without writing any Elixir code first:
+Runs a query against the picked backend's own prefilled seed dataset
+and prints the resulting rows, without writing any Elixir code first:
 
 ```console
 $ mix scry.query 'SELECT users WHERE status = "active" { name }'
 $ mix scry.query --file path/to/query.scry
+$ mix scry.query --backend ets 'SELECT users WHERE id = 1 { name }'
 ```
 
+`--backend` picks `in_memory` (the default), `ets`, or `sqlite` --
+same seed data either way, only *how* the answer is produced changes.
 `mix help scry.query` has the full usage.
 
 ### `mix scry.iex` -- an interactive, `iex`-like query prompt
@@ -86,7 +100,8 @@ scry>
 
 A query only runs once it parses -- pressing Enter mid-query keeps the
 prompt open (`...>`) for the next line, rather than erroring
-immediately. Ctrl+D exits.
+immediately. Ctrl+D exits. `--backend` works the same way it does for
+`mix scry.query`, for the whole session.
 
 For Up/Down arrow-key history (recalling and re-running a previous
 query), run it as `iex -S mix scry.iex` instead -- plain `mix scry.iex`
@@ -94,36 +109,46 @@ prints a reminder of this at startup. `mix help scry.iex` has the full
 usage, including why (OTP's own interactive-shell line editing, not
 something this task implements itself).
 
-### `mix scry.bench` -- benchmark `ScryCore.Executor`'s real speed and memory
+### `mix scry.bench` -- benchmark `Scry.Core.Executor`'s real speed and memory
 
 Generates a real SQLite database and reports real timing and memory
-numbers for `ScryCore.Executor.run/4` against a point lookup, a flat
+numbers for `Scry.Core.Executor.run/4` against a point lookup, a flat
 aggregate over the whole table, and both a low- and a high-cardinality
-`GROUP BY`. For each query: rows actually scanned vs. rows returned,
-duration (avg/min/median/max/stddev across several timed iterations,
-plus total), throughput (rows/sec, µs/row), and memory (an *immediate*
-delta and a *settled* delta after an explicit GC -- the one that
-actually answers "did this retain the whole source in memory"), plus a
-summary table across every query at the end. The memory side of this
-is the same measurement that originally motivated bounding `Executor`'s
-own memory to what a query actually needs -- kept here as a repeatable
-benchmark/regression tool rather than a one-off scratch script:
+`GROUP BY`, served through `Scry.Engine.Exqlite` (real `fetch/3`
+`WHERE`-clause pushdown, batched fetching, a connection opened once and
+reused across every query). For each query: rows returned, duration
+(avg/min/median/max/stddev across several timed iterations, plus
+total), and memory (an *immediate* delta and a *settled* delta after an
+explicit GC -- the one that actually answers "did this retain the
+whole source in memory"), plus a summary table across every query at
+the end. The memory side of this is the same measurement that
+originally motivated bounding `Executor`'s own memory to what a query
+actually needs -- kept here as a repeatable benchmark/regression tool
+rather than a one-off scratch script:
 
 ```console
 $ mix scry.bench
 $ mix scry.bench --users 1000000
 $ mix scry.bench --users 1000000 --iterations 10
+$ mix scry.bench --compare-ets
 ```
 
-`mix help scry.bench` has the full usage, including exactly what each
-reported number means.
+`--compare-ets` additionally generates a comparably-sized `Scry.Engine.
+ETS` dataset and runs every query against it too, side by side with the
+SQLite numbers -- off by default (it roughly doubles generation time
+and peak memory, and the concrete problem this task exists to catch --
+a point lookup degrading into a full-table scan -- is already fully
+visible from the SQLite numbers alone). `mix help scry.bench` has the
+full usage, including exactly what each reported number means and why
+`Scry.Test.Core.Conn.in_memory/1` is deliberately never part of this
+comparison at benchmark scale.
 
 ## Installation
 
 ```elixir
 def deps do
   [
-    {:scry_test_engine_core, "~> 0.1.0", only: :test}
+    {:scry_test_core, "~> 0.1.0", only: :test}
   ]
 end
 ```
@@ -133,7 +158,7 @@ end
 Documentation is generated with [ExDoc](https://github.com/elixir-lang/ex_doc):
 
 - Released versions are published to [HexDocs](https://hexdocs.pm) once the
-  package ships, at <https://hexdocs.pm/scry_test_engine_core>.
+  package ships, at <https://hexdocs.pm/scry_test_core>.
 - Latest `main` is built and deployed automatically by
   [`.github/workflows/docs.yml`](.github/workflows/docs.yml) to
-  [GitHub Pages](https://joetjen.github.io/scry_test_engine_core/) on every push to `main`.
+  [GitHub Pages](https://joetjen.github.io/scry_test_core/) on every push to `main`.

@@ -1,4 +1,4 @@
-defmodule ScryTestEngineCore.Seed do
+defmodule Scry.Test.Core.Seed do
   @moduledoc """
   A reasonably large, realistic, multi-table relational dataset --
   `users`/`products`/`orders`/`order_items`, with real foreign-key-
@@ -7,10 +7,14 @@ defmodule ScryTestEngineCore.Seed do
   `products.id`) -- for exercising `WHERE`/`GROUP BY`/aggregates and,
   especially, nested `SELECT`/correlation (lang_spec.md §6) against
   something with real relationships to correlate across, not just a
-  handful of flat rows. `ScryTestEngineCore.Conn.seed/0` is the
-  intended entry point; this module exists on its own so the raw data
-  is independently reusable (a test wanting only `users`, say, without
-  the rest) without needing a whole `Conn` for it.
+  handful of flat rows. `Scry.Test.Core.Conn`'s own `in_memory/1`,
+  `ets/1`, and `sqlite/1` all load this same dataset by default -- one
+  shared seed across all three backends, so a query run against each
+  is a genuine apples-to-apples comparison, not three different
+  fixtures that happen to look similar. This module exists on its own
+  so the raw data is independently reusable (a test wanting only
+  `users`, say, without the rest) without needing a whole `Conn` for
+  it.
 
   Not randomly generated and not trying to be exhaustive -- a fixed,
   hand-authored dataset, small enough to reason about in a test's own
@@ -20,7 +24,7 @@ defmodule ScryTestEngineCore.Seed do
   side.
   """
 
-  alias ScryCore.EngineBehaviour
+  alias Scry.Core.EngineBehaviour
 
   @users [
     %{
@@ -93,7 +97,7 @@ defmodule ScryTestEngineCore.Seed do
     %{"id" => 12, "order_id" => 7, "product_id" => 1, "quantity" => 1}
   ]
 
-  @doc "The full seed dataset, in `ScryTestEngineCore.Conn.data()`'s own `%{source_path => rows}` shape."
+  @doc "The full seed dataset, in `Scry.Test.Core.Conn.data()`'s own `%{source_path => rows}` shape."
   @spec data() :: %{optional([String.t()]) => [EngineBehaviour.row()]}
   def data do
     %{
@@ -122,4 +126,20 @@ defmodule ScryTestEngineCore.Seed do
   """
   @spec order_items() :: [EngineBehaviour.row()]
   def order_items, do: @order_items
+
+  @doc """
+  One `{source, key_field}` pair per table -- every table here happens
+  to have a real, unique `id` column, so this is what `Scry.Test.Core.
+  Conn.ets/1` passes straight through to `Scry.Engine.ETS.Conn.new/2`'s
+  own `keys:` option.
+  """
+  @spec keys() :: [{[String.t()], String.t()}]
+  def keys do
+    [
+      {["users"], "id"},
+      {["products"], "id"},
+      {["orders"], "id"},
+      {["order_items"], "id"}
+    ]
+  end
 end

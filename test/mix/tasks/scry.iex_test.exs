@@ -69,4 +69,19 @@ defmodule Mix.Tasks.Scry.IexTest do
 
     assert output =~ "iex -S mix scry.iex"
   end
+
+  test "--backend ets serves the same seed data as the default in_memory backend" do
+    output =
+      capture_io(~s(SELECT users WHERE id = 1 { name }\n), fn ->
+        Mix.Tasks.Scry.Iex.run(["--backend", "ets"])
+      end)
+
+    assert output =~ ~s("name" => "Alice")
+  end
+
+  test "an unknown --backend is a clear usage error, before the prompt ever starts" do
+    assert_raise Mix.Error, ~r/unknown --backend bogus/, fn ->
+      capture_io(fn -> Mix.Tasks.Scry.Iex.run(["--backend", "bogus"]) end)
+    end
+  end
 end

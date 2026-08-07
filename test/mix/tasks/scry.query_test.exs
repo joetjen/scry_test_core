@@ -1,16 +1,17 @@
 defmodule Mix.Tasks.Scry.QueryTest do
   @moduledoc """
   `mix scry.query` -- both ways of supplying a query (an argument, a
-  `--file`), both usage errors (neither given, both given), and a
-  parse error's own formatting (`Ichor.Error.format/1`, not a raw
-  struct dump).
+  `--file`), both usage errors (neither given, both given), a parse
+  error's own formatting (`Ichor.Error.format/1`, not a raw struct
+  dump), and `--backend` picking a different `Scry.Test.Core.Conn`
+  constructor (defaulting to `in_memory`) without changing the answer.
   """
 
   use ExUnit.Case, async: false
 
   import ExUnit.CaptureIO
 
-  test "a query argument, run against Conn.seed/0, prints the resulting rows" do
+  test "a query argument, run against the default in_memory backend, prints the resulting rows" do
     output =
       capture_io(fn ->
         Mix.Tasks.Scry.Query.run([~s(SELECT users WHERE status = "active" { name })])
@@ -62,6 +63,32 @@ defmodule Mix.Tasks.Scry.QueryTest do
   test "a parse error is formatted via Ichor.Error.format/1, not a raw struct dump" do
     assert_raise Mix.Error, ~r/^scry\.query failed: (?!%Ichor\.Error)/, fn ->
       capture_io(fn -> Mix.Tasks.Scry.Query.run(["NOT A REAL QUERY"]) end)
+    end
+  end
+
+  test "--backend ets runs against the same seed data, real pushdown or not" do
+    output =
+      capture_io(fn ->
+        Mix.Tasks.Scry.Query.run(["--backend", "ets", "SELECT users WHERE id = 1 { name }"])
+      end)
+
+    assert output =~ ~s("name" => "Alice")
+  end
+
+  test "--backend sqlite runs against the same seed data, real pushdown or not" do
+    output =
+      capture_io(fn ->
+        Mix.Tasks.Scry.Query.run(["--backend", "sqlite", "SELECT users WHERE id = 1 { name }"])
+      end)
+
+    assert output =~ ~s("name" => "Alice")
+  end
+
+  test "an unknown --backend is a clear usage error" do
+    assert_raise Mix.Error, ~r/unknown --backend bogus/, fn ->
+      capture_io(fn ->
+        Mix.Tasks.Scry.Query.run(["--backend", "bogus", "SELECT users {name}"])
+      end)
     end
   end
 end

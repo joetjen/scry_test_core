@@ -3,7 +3,7 @@ defmodule Mix.Tasks.Scry.Iex do
 
   @moduledoc """
   An interactive, `iex`-like prompt for trying Scry queries against
-  `ScryTestEngineCore.Conn.seed/0`'s own prefilled dataset
+  `Scry.Test.Core.Conn`'s own prefilled dataset
   (`users`/`products`/`orders`/`order_items`) -- no need to write out
   a full `mix scry.query "..."` invocation per query, or a `.exs`
   script.
@@ -14,6 +14,13 @@ defmodule Mix.Tasks.Scry.Iex do
       ...>   { name }
       [%{"name" => "Alice"}, ...]
       scry>
+
+  `--backend` picks which `Scry.Test.Core.Conn` constructor serves
+  every query for the whole session -- `in_memory` (the default,
+  `Scry.Engine.InMemory`), `ets` (`Scry.Engine.ETS`), or `sqlite`
+  (`Scry.Engine.Exqlite`); `mix scry.query`'s own moduledoc has the
+  full reasoning (same seed data either way, only *how* the answer is
+  produced changes).
 
   A query is only run once it parses -- pressing Enter mid-query (a
   still-incomplete `SELECT ... { ... }`, say) switches the prompt to
@@ -41,12 +48,12 @@ defmodule Mix.Tasks.Scry.Iex do
   about this task works identically either way.
 
   One real limitation, worth stating rather than papering over:
-  `ScryCore`'s own grammar is a plain backtracking PEG parser (`Ichor`),
+  `Scry.Core`'s own grammar is a plain backtracking PEG parser (`Ichor`),
   with no incremental/error-recovery parse mode to explain *why* a
   parse failed -- unlike `Code.string_to_quoted/2`'s own dedicated
   `TokenMissingError`, which is exactly how `iex` itself tells "needs
   one more line" apart from "wrong, full stop" (confirmed empirically:
-  `ScryCore.parse("SELECT users")` and `ScryCore.parse("NOT A REAL
+  `Scry.Core.parse("SELECT users")` and `Scry.Core.parse("NOT A REAL
   QUERY")` return the *identical* positionless `%Ichor.Error{message:
   "input does not match :document"}`, nothing to tell them apart by).
   So this prompt doesn't try to guess -- it never shows a parse error
@@ -61,11 +68,27 @@ defmodule Mix.Tasks.Scry.Iex do
   @primary_prompt "scry> "
   @continuation_prompt "...> "
 
+  @backends %{
+    "in_memory" => &Scry.Test.Core.Conn.in_memory/0,
+    "ets" => &Scry.Test.Core.Conn.ets/0,
+    "sqlite" => &Scry.Test.Core.Conn.sqlite/0
+  }
+
   @impl Mix.Task
-  def run(_argv) do
+  def run(argv) do
     Mix.Task.run("app.start")
-    maybe_hint_about_history()
-    loop("")
+
+    {switches, _args} = OptionParser.parse!(argv, strict: [backend: :string])
+    name = switches[:backend] || "in_memory"
+
+    case Map.fetch(@backends, name) do
+      {:ok, constructor} ->
+        maybe_hint_about_history()
+        loop("", constructor.())
+
+      :error ->
+        Mix.raise("scry.iex: unknown --backend #{name} (expected in_memory, ets, or sqlite)")
+    end
   end
 
   defp maybe_hint_about_history do
@@ -76,45 +99,44 @@ defmodule Mix.Tasks.Scry.Iex do
     end
   end
 
-  defp loop(buffer) do
+  defp loop(buffer, backend) do
     prompt = if buffer == "", do: @primary_prompt, else: @continuation_prompt
 
     case IO.gets(prompt) do
       :eof -> IO.puts("")
       {:error, reason} -> Mix.raise("scry.iex: #{inspect(reason)}")
-      line -> handle_line(buffer, String.trim_trailing(line, "\n"))
+      line -> handle_line(buffer, String.trim_trailing(line, "\n"), backend)
     end
   end
 
-  defp handle_line(buffer, line) do
+  defp handle_line(buffer, line, backend) do
     blank? = String.trim(line) == ""
 
     cond do
-      buffer == "" and blank? -> loop("")
-      blank? -> attempt(buffer, force: true)
-      buffer == "" -> attempt(line, force: false)
-      true -> attempt(buffer <> "\n" <> line, force: false)
+      buffer == "" and blank? -> loop("", backend)
+      blank? -> attempt(buffer, backend, force: true)
+      buffer == "" -> attempt(line, backend, force: false)
+      true -> attempt(buffer <> "\n" <> line, backend, force: false)
     end
   end
 
-  defp attempt(buffer, force: force?) do
-    case ScryCore.parse(buffer) do
+  defp attempt(buffer, backend, force: force?) do
+    case Scry.Core.parse(buffer) do
       {:ok, query} ->
-        execute(query)
-        loop("")
+        execute(query, backend)
+        loop("", backend)
 
       {:error, reason} when force? ->
         IO.puts(format_error(reason))
-        loop("")
+        loop("", backend)
 
       {:error, _reason} ->
-        loop(buffer)
+        loop(buffer, backend)
     end
   end
 
-  defp execute(query) do
-    with {:ok, cursor} <-
-           ScryCore.Executor.run(query, ScryTestEngineCore, ScryTestEngineCore.Conn.seed()),
+  defp execute(query, {engine, conn}) do
+    with {:ok, cursor} <- Scry.Core.Executor.run(query, engine, conn),
          {:ok, rows} <- materialize(cursor) do
       IO.inspect(rows, pretty: true, limit: :infinity)
     else
@@ -122,14 +144,14 @@ defmodule Mix.Tasks.Scry.Iex do
     end
   end
 
-  # `ScryCore.Executor.run/3` returns a lazy `ScryCore.Cursor.t()` now --
+  # `Scry.Core.Executor.run/3` returns a lazy `Scry.Core.Cursor.t()` now --
   # this REPL always wants the full result set printed at once, and a
-  # lazily-raised `ScryCore.Executor.QueryError` needs to fold back into
+  # lazily-raised `Scry.Core.Executor.QueryError` needs to fold back into
   # the same `{:error, reason}` shape the `with` above already handles.
   defp materialize(cursor) do
-    {:ok, ScryCore.Cursor.to_list(cursor)}
+    {:ok, Scry.Core.Cursor.to_list(cursor)}
   rescue
-    e in ScryCore.Executor.QueryError -> {:error, e.reason}
+    e in Scry.Core.Executor.QueryError -> {:error, e.reason}
   end
 
   # Same formatting `mix scry.query` uses -- a parse failure is one (or

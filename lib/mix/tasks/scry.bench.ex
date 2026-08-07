@@ -1,24 +1,26 @@
 defmodule Mix.Tasks.Scry.Bench do
-  @shortdoc "Benchmarks ScryCore.Executor's speed and memory against a real, embedded SQLite database"
+  @shortdoc "Benchmarks Scry.Core.Executor's speed and memory against real engines at scale"
 
   @moduledoc """
-  Generates a real SQLite database (`users`/`orders`, via `exqlite`'s
-  own low-level `Exqlite.Sqlite3` NIF API -- not `DBConnection.stream/4`,
-  whose own cursor is scoped to the transaction that created it and
-  therefore unusable across a `fetch/2` call boundary) and reports real
-  timing and memory numbers for `ScryCore.Executor.run/4` against a
+  Generates a real SQLite database (`users`/`orders`) and reports real
+  timing and memory numbers for `Scry.Core.Executor.run/4` against a
   handful of representative queries -- a point lookup, a flat aggregate
   over the whole table, a low-cardinality `GROUP BY`, and a genuinely
-  high-cardinality one. The memory side of this is the same measurement
-  technique (and the same finding) that originally motivated bounding
-  `Executor`'s own memory to what a query actually needs (see
-  `scry_core`'s own `CHANGELOG.md`) -- kept here, against a real
-  embedded database rather than a scratch script, as a repeatable
-  regression tool for future work, not a one-off proof.
+  high-cardinality one -- served through `Scry.Engine.Exqlite`, the
+  real adapter package (`fetch/3` `WHERE`-clause pushdown, batched
+  `multi_step/3` fetching, a connection opened once and reused across
+  every query) rather than an ad-hoc engine module duplicated inside
+  this task. The memory side of this is the same measurement technique
+  (and the same finding) that originally motivated bounding `Executor`'s
+  own memory to what a query actually needs (see `scry_core`'s own
+  `CHANGELOG.md`) -- kept here, against a real embedded database rather
+  than a scratch script, as a repeatable regression tool for future
+  work, not a one-off proof.
 
       $ mix scry.bench
       $ mix scry.bench --users 1000000
       $ mix scry.bench --users 1000000 --iterations 10
+      $ mix scry.bench --compare-ets
 
   `--users` (default 10,000,000) controls the generated scale; `orders`
   is always twice that. `--iterations` (default 3) controls how many
@@ -30,157 +32,142 @@ defmodule Mix.Tasks.Scry.Bench do
   takes a while; a smaller `--users` trades that for a quicker, less
   realistic run.
 
+  `--compare-ets` additionally generates a comparably-sized `Scry.
+  Engine.ETS` dataset (the same rows, loaded into real ETS tables
+  during the same generation pass) and runs every query against it
+  too, printed side by side with the SQLite numbers -- a direct,
+  measured comparison between the two real pushdown-capable engines at
+  the same scale, not just against each other in the abstract. Off by
+  default: it roughly doubles both generation time and peak memory
+  (a real ETS-backed copy of the whole dataset, on top of the SQLite
+  file), and the concrete problem this task exists to catch (a point
+  lookup degrading into a full-table scan) is already fully visible
+  from the SQLite numbers alone.
+
+  `Scry.Test.Core.Conn.in_memory/1` is deliberately never part of this
+  comparison at benchmark scale -- loading `--users` rows into a plain
+  Elixir list is exactly the "read everything into memory and scan it
+  by hand" behavior this whole engine-pushdown architecture exists to
+  get away from; running it here would just reproduce the original,
+  already-diagnosed problem instead of measuring the fix.
+
   ## What's reported, per query
 
-  - **Rows scanned** -- the real number of rows `ScryCore.Executor`
-    actually pulled from the source (a genuine per-row `:counters`
-    tally inside `fetch/2`, not inferred from the query or the result),
-    and **rows returned** -- the output row count. These can differ a
-    lot (a `GROUP BY` scans every matching row but returns one per
-    group; a `LIMIT`-bound point lookup may scan far fewer rows than
-    the source has).
+  - **Rows returned** -- the output row count. A `GROUP BY` query
+    returns far fewer rows than it reads; a `LIMIT`-bound point lookup
+    returns at most one. Unlike the very first version of this task,
+    "rows scanned" is no longer reported: it depended on a
+    `:counters`-instrumented ad-hoc engine, an instrumentation hook
+    real adapter packages (`Scry.Engine.Exqlite`/`Scry.Engine.ETS`)
+    deliberately don't expose (it's benchmark-only surface, not
+    something a production adapter should carry) -- duration and
+    memory already answer "did the pushdown help" without it.
   - **Duration** -- average, min, median, max, and standard deviation
     across the timed iterations, plus the total across all of them.
-  - **Throughput** -- rows scanned per second, and microseconds per
-    scanned row (both derived from the *average* duration).
   - **Memory** -- the same *immediate* (right after the call returns,
     including not-yet-reclaimed garbage) vs. *settled* (after an
     explicit `:erlang.garbage_collect/0` -- what's actually still
     retained) distinction the memory-only version of this task always
-    reported, plus settled bytes retained per scanned row.
+    reported.
 
-  A summary table across every query runs at the end for an at-a-glance
-  comparison, followed by the benchmark's own total wall-clock time
-  (database generation included).
+  A summary table across every query (and backend, with `--compare-ets`)
+  runs at the end for an at-a-glance comparison, followed by the
+  benchmark's own total wall-clock time (database/table generation
+  included).
   """
 
   use Mix.Task
 
   @default_users 10_000_000
   @default_iterations 3
-
-  defmodule Engine do
-    @moduledoc false
-    @behaviour ScryCore.EngineBehaviour
-
-    # `conn` is `{db_path, counter}` -- `counter` (`:counters`, size 1)
-    # is bumped once per row actually pulled through the stream, giving
-    # a real, per-call "rows scanned" tally, not a number inferred from
-    # the query or the result. A fresh counter per call (`run_query/2`
-    # below) keeps each timed iteration's own tally independent.
-    @impl true
-    def fetch({db_path, counter}, [table]) when table in ["users", "orders"] do
-      {:ok, conn} = Exqlite.Sqlite3.open(db_path, mode: :readonly)
-      {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "SELECT * FROM #{table}")
-      {:ok, columns} = Exqlite.Sqlite3.columns(conn, stmt)
-      columns = Enum.map(columns, &to_string/1)
-
-      stream =
-        Stream.resource(
-          fn -> {conn, stmt} end,
-          fn {conn, stmt} = state ->
-            case Exqlite.Sqlite3.step(conn, stmt) do
-              {:row, values} ->
-                :counters.add(counter, 1, 1)
-                {[Enum.zip(columns, values) |> Map.new()], state}
-
-              :done ->
-                {:halt, state}
-            end
-          end,
-          fn {conn, stmt} ->
-            Exqlite.Sqlite3.release(conn, stmt)
-            Exqlite.Sqlite3.close(conn)
-          end
-        )
-
-      {:ok, stream}
-    end
-
-    def fetch(_conn, source), do: {:error, {:no_such_source, source}}
-  end
+  @batch_size 10_000
 
   @impl Mix.Task
   def run(argv) do
     Mix.Task.run("app.start")
 
     {switches, _args} =
-      OptionParser.parse!(argv, strict: [users: :integer, iterations: :integer])
+      OptionParser.parse!(argv,
+        strict: [users: :integer, iterations: :integer, compare_ets: :boolean]
+      )
 
     user_count = switches[:users] || @default_users
     iterations = switches[:iterations] || @default_iterations
+    compare_ets? = switches[:compare_ets] || false
     order_count = user_count * 2
     mid_id = div(user_count, 2)
 
-    db_path = Path.join(System.tmp_dir!(), "scry_test_engine_core_bench.db")
+    db_path = Path.join(System.tmp_dir!(), "scry_test_core_bench.db")
     File.rm(db_path)
 
-    try do
-      {run_us, _} =
-        :timer.tc(fn ->
-          {gen_us, :ok} = :timer.tc(fn -> generate(db_path, user_count, order_count) end)
-          IO.puts(" done in #{format_duration(gen_us)}.")
+    {run_us, _} =
+      :timer.tc(fn ->
+        IO.write(
+          "Generating #{format_int(user_count)} users / #{format_int(order_count)} orders..."
+        )
+
+        {gen_us, {sqlite_conn, ets_conn}} =
+          :timer.tc(fn -> generate(db_path, user_count, order_count, compare_ets?) end)
+
+        IO.puts(" done in #{format_duration(gen_us)}.")
+
+        try do
+          backend_label = if compare_ets?, do: " per query/backend", else: " per query"
 
           IO.puts(
             "\n#{format_int(user_count)} users / #{format_int(order_count)} orders -- " <>
-              "#{iterations} timed iterations (+1 untimed warmup) per query, through " <>
-              "ScryCore.Executor.run/4\n"
+              "#{iterations} timed iterations (+1 untimed warmup)#{backend_label}, through " <>
+              "Scry.Core.Executor.run/4\n"
           )
 
-          results = [
-            benchmark(
-              "WHERE id = <mid> LIMIT 1 (a real, non-adversarial point lookup)",
-              iterations,
-              fn -> run_query(~s[SELECT users WHERE id = #{mid_id} LIMIT 1 { name }], db_path) end
-            ),
-            benchmark(
-              "no LIMIT, flat avg(age) over the whole users table (O(1) groups)",
-              iterations,
-              fn -> run_query("SELECT users { a: avg(age) }", db_path) end
-            ),
-            benchmark(
-              "GROUP BY status (3 distinct groups) -- count + avg(age)",
-              iterations,
-              fn ->
-                run_query(
-                  "SELECT users GROUP BY status { status, n: count(id), a: avg(age) }",
-                  db_path
-                )
-              end
-            ),
-            benchmark(
-              "GROUP BY user_id on orders (~#{format_int(user_count)} distinct groups -- " <>
-                "adversarial: memory scales with group count, not row count)",
-              iterations,
-              fn ->
-                run_query(
-                  "SELECT orders GROUP BY user_id { user_id, total: sum(total) }",
-                  db_path
-                )
-              end
-            )
+          queries = [
+            {"point lookup", "WHERE id = <mid> LIMIT 1 (a real, non-adversarial point lookup)",
+             ~s[SELECT users WHERE id = #{mid_id} LIMIT 1 { name }]},
+            {"avg(age), no GROUP BY",
+             "no LIMIT, flat avg(age) over the whole users table (O(1) groups)",
+             "SELECT users { a: avg(age) }"},
+            {"GROUP BY status", "GROUP BY status (3 distinct groups) -- count + avg(age)",
+             "SELECT users GROUP BY status { status, n: count(id), a: avg(age) }"},
+            {"GROUP BY user_id",
+             "GROUP BY user_id on orders (~#{format_int(user_count)} distinct groups -- " <>
+               "adversarial: memory scales with group count, not row count)",
+             "SELECT orders GROUP BY user_id { user_id, total: sum(total) }"}
           ]
 
-          print_summary_table(results)
-        end)
+          backends =
+            [{"sqlite", Scry.Engine.Exqlite, sqlite_conn}] ++
+              if(compare_ets?, do: [{"ets", Scry.Engine.ETS, ets_conn}], else: [])
 
-      IO.puts("Total benchmark wall-clock time (generation included): #{format_duration(run_us)}")
-    after
-      File.rm(db_path)
-    end
+          results =
+            for {short_label, label, query_text} <- queries,
+                {backend_name, engine, conn} <- backends do
+              full_short_label =
+                if compare_ets?, do: "#{short_label} [#{backend_name}]", else: short_label
+
+              benchmark(label, full_short_label, iterations, fn ->
+                run_query(query_text, engine, conn)
+              end)
+            end
+
+          print_summary_table(results)
+        after
+          Scry.Engine.Exqlite.Conn.close(sqlite_conn)
+        end
+      end)
+
+    IO.puts("Total benchmark wall-clock time (generation included): #{format_duration(run_us)}")
+    File.rm(db_path)
   end
 
-  defp run_query(query_text, db_path) do
-    {:ok, query} = ScryCore.parse(query_text)
-    counter = :counters.new(1, [])
-    {:ok, cursor} = ScryCore.Executor.run(query, Engine, {db_path, counter})
-    rows = ScryCore.Cursor.to_list(cursor)
-    {rows, :counters.get(counter, 1)}
+  defp run_query(query_text, engine, conn) do
+    {:ok, query} = Scry.Core.parse(query_text)
+    {:ok, cursor} = Scry.Core.Executor.run(query, engine, conn)
+    Scry.Core.Cursor.to_list(cursor)
   end
 
   # ---- Benchmark runner ----------------------------------------------------
 
-  defp benchmark(label, iterations, fun) do
+  defp benchmark(label, short_label, iterations, fun) do
     # Untimed -- primes the OS-level file-page cache so the first
     # *timed* iteration isn't penalized for a cold-cache disk read none
     # of the others will pay either.
@@ -188,13 +175,13 @@ defmodule Mix.Tasks.Scry.Bench do
 
     timings = for _ <- 1..iterations, do: :timer.tc(fun)
     durations_us = Enum.map(timings, &elem(&1, 0))
-    {rows, rows_scanned} = timings |> List.first() |> elem(1)
+    rows = timings |> List.first() |> elem(1)
 
     result = %{
       label: label,
+      short_label: short_label,
       iterations: iterations,
       rows_returned: length(rows),
-      rows_scanned: rows_scanned,
       stats: duration_stats(durations_us),
       mem: measure_memory(fun)
     }
@@ -252,49 +239,36 @@ defmodule Mix.Tasks.Scry.Bench do
          label: label,
          iterations: iterations,
          rows_returned: rows_returned,
-         rows_scanned: rows_scanned,
          stats: s,
          mem: m
        }) do
-    rows_per_sec = safe_rate(rows_scanned, s.avg_us)
-    us_per_row = safe_div(s.avg_us, rows_scanned)
-    settled_bytes_per_row = safe_div(m.settled_bytes, rows_scanned)
-
     IO.puts("""
 
     #{label}
-      rows:        #{format_int(rows_scanned)} scanned, #{format_int(rows_returned)} returned (#{iterations} timed iterations, +1 untimed warmup)
-      duration:    avg #{format_duration(s.avg_us)} (min #{format_duration(s.min_us)}, median #{format_duration(s.median_us)}, max #{format_duration(s.max_us)}, stddev #{format_duration(s.stddev_us)})
-                   total #{format_duration(s.total_us)} across all #{iterations} timed iterations
-      throughput:  #{format_int(round(rows_per_sec))} rows/sec, #{format_float(us_per_row)} µs/row scanned
-      memory:      immediate #{format_mb(m.immediate_bytes)}, settled after GC #{format_mb(m.settled_bytes)} (#{format_float(settled_bytes_per_row)} bytes/row settled)\
+      rows returned: #{format_int(rows_returned)} (#{iterations} timed iterations, +1 untimed warmup)
+      duration:      avg #{format_duration(s.avg_us)} (min #{format_duration(s.min_us)}, median #{format_duration(s.median_us)}, max #{format_duration(s.max_us)}, stddev #{format_duration(s.stddev_us)})
+                     total #{format_duration(s.total_us)} across all #{iterations} timed iterations
+      memory:        immediate #{format_mb(m.immediate_bytes)}, settled after GC #{format_mb(m.settled_bytes)}\
     """)
   end
 
   defp print_summary_table(results) do
     columns = [
-      {"query", 50, :left},
-      {"rows scanned", 13, :right},
+      {"query [backend]", 30, :left},
+      {"rows returned", 13, :right},
       {"avg duration", 12, :right},
-      {"rows/sec", 12, :right},
-      {"µs/row", 10, :right},
       {"settled mem", 12, :right}
     ]
 
     IO.puts("\nSummary")
-    IO.puts(render_row(Enum.map(columns, fn {name, width, align} -> {name, width, align} end)))
+    IO.puts(render_row(columns))
     IO.puts(String.duplicate("-", Enum.sum(Enum.map(columns, fn {_, w, _} -> w + 3 end))))
 
     Enum.each(results, fn r ->
-      rows_per_sec = safe_rate(r.rows_scanned, r.stats.avg_us)
-      us_per_row = safe_div(r.stats.avg_us, r.rows_scanned)
-
       cells = [
-        {String.slice(r.label, 0, 50), 50, :left},
-        {format_int(r.rows_scanned), 13, :right},
+        {r.short_label, 30, :left},
+        {format_int(r.rows_returned), 13, :right},
         {format_duration(r.stats.avg_us), 12, :right},
-        {format_int(round(rows_per_sec)), 12, :right},
-        {format_float(us_per_row), 10, :right},
         {format_mb(r.mem.settled_bytes), 12, :right}
       ]
 
@@ -305,17 +279,14 @@ defmodule Mix.Tasks.Scry.Bench do
   defp render_row(cells) do
     cells
     |> Enum.map(fn
-      {text, width, :left} -> String.pad_trailing(to_string(text), width)
-      {text, width, :right} -> String.pad_leading(to_string(text), width)
+      {text, width, :left} ->
+        text |> to_string() |> String.slice(0, width) |> String.pad_trailing(width)
+
+      {text, width, :right} ->
+        String.pad_leading(to_string(text), width)
     end)
     |> Enum.join(" | ")
   end
-
-  defp safe_rate(_count, avg_us) when avg_us <= 0, do: 0.0
-  defp safe_rate(count, avg_us), do: count / (avg_us / 1_000_000)
-
-  defp safe_div(_numerator, 0), do: 0.0
-  defp safe_div(numerator, denominator), do: numerator / denominator
 
   defp format_duration(us) when us >= 1_000_000, do: "#{Float.round(us / 1_000_000, 3)} s"
   defp format_duration(us) when us >= 1_000, do: "#{Float.round(us / 1_000, 2)} ms"
@@ -327,8 +298,6 @@ defmodule Mix.Tasks.Scry.Bench do
     "#{sign}#{Float.round(mb, 2)} MB"
   end
 
-  defp format_float(f), do: to_string(Float.round(f * 1.0, 2))
-
   defp format_int(n) when is_integer(n) do
     n
     |> Integer.to_string()
@@ -337,58 +306,100 @@ defmodule Mix.Tasks.Scry.Bench do
     |> String.reverse()
   end
 
-  defp generate(db_path, user_count, order_count) do
-    {:ok, conn} = Exqlite.Sqlite3.open(db_path)
+  # ---- Generation ------------------------------------------------------
+
+  # Builds the SQLite database (always) and, when `compare_ets?` is
+  # true, a comparably-sized `Scry.Engine.ETS.Conn` from the exact same
+  # generated rows, in one pass -- batched (`@batch_size` rows at a
+  # time via `Stream.chunk_every/2`, never the whole `user_count`/
+  # `order_count` materialized as a single Elixir list) so peak memory
+  # during generation itself doesn't scale with `--users`.
+  defp generate(db_path, user_count, order_count, compare_ets?) do
+    {:ok, sqlite_conn} = Scry.Engine.Exqlite.Conn.open(db_path)
+    db = sqlite_conn.db
 
     :ok =
-      Exqlite.Sqlite3.execute(conn, """
+      Exqlite.Sqlite3.execute(db, """
       CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, status TEXT)
       """)
 
     :ok =
-      Exqlite.Sqlite3.execute(conn, """
+      Exqlite.Sqlite3.execute(db, """
       CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total INTEGER)
       """)
 
-    IO.write("Generating #{format_int(user_count)} users / #{format_int(order_count)} orders...")
-    gen_users(conn, user_count)
-    gen_orders(conn, order_count, user_count)
-    :ok = Exqlite.Sqlite3.execute(conn, "CREATE INDEX idx_orders_user_id ON orders(user_id)")
-    Exqlite.Sqlite3.close(conn)
+    ets_conn =
+      if compare_ets? do
+        Scry.Engine.ETS.Conn.new(%{}, keys: [{["users"], "id"}, {["orders"], "id"}])
+      end
+
+    ets_conn = gen_users(db, ets_conn, user_count)
+    ets_conn = gen_orders(db, ets_conn, order_count, user_count)
+
+    :ok = Exqlite.Sqlite3.execute(db, "CREATE INDEX idx_orders_user_id ON orders(user_id)")
+
+    {sqlite_conn, ets_conn}
   end
 
-  defp gen_users(conn, count) do
+  defp gen_users(db, ets_conn, count) do
     statuses = ["active", "inactive", "pending"]
 
-    :ok = Exqlite.Sqlite3.execute(conn, "BEGIN")
-    {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "INSERT INTO users VALUES (?, ?, ?, ?)")
+    :ok = Exqlite.Sqlite3.execute(db, "BEGIN")
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, "INSERT INTO users VALUES (?, ?, ?, ?)")
 
-    Enum.each(1..count, fn i ->
-      :ok =
-        Exqlite.Sqlite3.bind(stmt, [
-          i,
-          "user_#{i}",
-          18 + rem(i, 65),
-          Enum.at(statuses, rem(i, 3))
-        ])
+    ets_conn =
+      1..count
+      |> Stream.chunk_every(@batch_size)
+      |> Enum.reduce(ets_conn, fn chunk, ets_conn ->
+        rows =
+          Enum.map(chunk, fn i ->
+            %{
+              "id" => i,
+              "name" => "user_#{i}",
+              "age" => 18 + rem(i, 65),
+              "status" => Enum.at(statuses, rem(i, 3))
+            }
+          end)
 
-      :done = Exqlite.Sqlite3.step(conn, stmt)
-    end)
+        Enum.each(rows, fn row ->
+          :ok = Exqlite.Sqlite3.bind(stmt, [row["id"], row["name"], row["age"], row["status"]])
+          :done = Exqlite.Sqlite3.step(db, stmt)
+        end)
 
-    :ok = Exqlite.Sqlite3.execute(conn, "COMMIT")
-    Exqlite.Sqlite3.release(conn, stmt)
+        put_batch(ets_conn, ["users"], rows)
+      end)
+
+    :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
+    Exqlite.Sqlite3.release(db, stmt)
+    ets_conn
   end
 
-  defp gen_orders(conn, count, user_count) do
-    :ok = Exqlite.Sqlite3.execute(conn, "BEGIN")
-    {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "INSERT INTO orders VALUES (?, ?, ?)")
+  defp gen_orders(db, ets_conn, count, user_count) do
+    :ok = Exqlite.Sqlite3.execute(db, "BEGIN")
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(db, "INSERT INTO orders VALUES (?, ?, ?)")
 
-    Enum.each(1..count, fn i ->
-      :ok = Exqlite.Sqlite3.bind(stmt, [i, 1 + rem(i, user_count), 10 + rem(i, 490)])
-      :done = Exqlite.Sqlite3.step(conn, stmt)
-    end)
+    ets_conn =
+      1..count
+      |> Stream.chunk_every(@batch_size)
+      |> Enum.reduce(ets_conn, fn chunk, ets_conn ->
+        rows =
+          Enum.map(chunk, fn i ->
+            %{"id" => i, "user_id" => 1 + rem(i, user_count), "total" => 10 + rem(i, 490)}
+          end)
 
-    :ok = Exqlite.Sqlite3.execute(conn, "COMMIT")
-    Exqlite.Sqlite3.release(conn, stmt)
+        Enum.each(rows, fn row ->
+          :ok = Exqlite.Sqlite3.bind(stmt, [row["id"], row["user_id"], row["total"]])
+          :done = Exqlite.Sqlite3.step(db, stmt)
+        end)
+
+        put_batch(ets_conn, ["orders"], rows)
+      end)
+
+    :ok = Exqlite.Sqlite3.execute(db, "COMMIT")
+    Exqlite.Sqlite3.release(db, stmt)
+    ets_conn
   end
+
+  defp put_batch(nil, _source, _rows), do: nil
+  defp put_batch(ets_conn, source, rows), do: Scry.Engine.ETS.Conn.put(ets_conn, source, rows)
 end

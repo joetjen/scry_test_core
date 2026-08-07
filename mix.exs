@@ -1,4 +1,4 @@
-defmodule ScryTestEngineCore.MixProject do
+defmodule Scry.Test.Core.MixProject do
   use Mix.Project
 
   @version "0.1.0"
@@ -13,7 +13,7 @@ defmodule ScryTestEngineCore.MixProject do
 
   def project do
     [
-      app: :scry_test_engine_core,
+      app: :scry_test_core,
       version: @version,
       elixir: "~> 1.19",
       start_permanent: Mix.env() == :prod,
@@ -21,7 +21,7 @@ defmodule ScryTestEngineCore.MixProject do
       deps: deps(),
       description: description(),
       package: package(),
-      name: "ScryTestEngineCore",
+      name: "Scry.Test.Core",
       docs: docs(),
       aliases: aliases(),
       test_coverage: [tool: ExCoveralls],
@@ -56,14 +56,26 @@ defmodule ScryTestEngineCore.MixProject do
       # === SCRY CORE ===
       # A local path dependency, not a Hex version constraint, since
       # scry_core isn't published to Hex yet -- this is the real
-      # dependency (ScryCore.EngineBehaviour, ScryCore.Executor,
-      # ScryCore.Actions, the grammar this package's own integration
+      # dependency (Scry.Core.EngineBehaviour, Scry.Core.Executor,
+      # Scry.Core.Actions, the grammar this package's own integration
       # tests parse queries against), not test-only, since implementing
-      # ScryCore.EngineBehaviour genuinely needs its types at compile
+      # Scry.Core.EngineBehaviour genuinely needs its types at compile
       # time. Switch to a `~> x.y` Hex requirement once scry_core is
       # actually published (impl_spec.md's own dependency-versions
       # convention).
       {:scry_core, path: "../scry_core"},
+
+      # === BACKEND ENGINES ===
+      # Local path dependencies, same reasoning as scry_core above --
+      # none of these three are published to Hex yet either. This
+      # package's own Scry.Test.Core.Conn exposes one constructor per
+      # engine (in_memory/1, ets/1, sqlite/1), all sharing the same seed
+      # dataset, so every scry_<kind> package gets real parity testing
+      # (and a real speed/memory comparison, via mix scry.bench) across
+      # all three "for real" -- not just the trivial in-memory case.
+      {:scry_engine_inmemory, path: "../scry_engine_inmemory"},
+      {:scry_engine_ets, path: "../scry_engine_ets"},
+      {:scry_engine_exqlite, path: "../scry_engine_exqlite"},
 
       # === CODE QUALITY & STATIC ANALYSIS ===
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -82,11 +94,15 @@ defmodule ScryTestEngineCore.MixProject do
       # Mix, and Hex are built-in (no deps needed)
       {:ex_doc, "~> 0.40", only: [:dev], runtime: false},
 
-      # `mix scry.bench` -- this whole package is test/integration
-      # tooling, never a production build in its own right, so unlike
-      # `scry_core`'s own `ichor` (which had to stay out of a real
-      # downstream production build), there's no equivalent boundary to
-      # protect here; a plain, unscoped dependency is the right shape.
+      # `mix scry.bench` -- `Scry.Engine.Exqlite` above serves queries,
+      # but generating the benchmark database itself (schema, bulk
+      # inserts, `CREATE INDEX`) still goes straight through `exqlite`'s
+      # own low-level API, so this package needs it directly too. This
+      # whole package is test/integration tooling, never a production
+      # build in its own right, so unlike `scry_core`'s own `ichor`
+      # (which had to stay out of a real downstream production build),
+      # there's no equivalent boundary to protect here; a plain,
+      # unscoped dependency is the right shape.
       {:exqlite, "~> 0.30"}
       # ExDoc is invoked via `MIX_ENV=dev mix docs`
     ]
@@ -108,14 +124,15 @@ defmodule ScryTestEngineCore.MixProject do
   end
 
   defp description do
-    "A static, in-memory implementation of scry_core's ScryCore.EngineBehaviour, for testing " <>
-      "the composition/execution pipeline end to end without a real external data source."
+    "Shared test/benchmark fixtures for scry_core: one seed dataset, servable through three " <>
+      "real Scry.Core.EngineBehaviour backends (in-memory, ETS, SQLite) via Scry.Test.Core.Conn, " <>
+      "plus mix scry.query/scry.iex/scry.bench for exercising them."
   end
 
   defp package do
     [
       licenses: ["MIT"],
-      links: %{"GitHub" => "https://github.com/joetjen/scry_test_engine_core"},
+      links: %{"GitHub" => "https://github.com/joetjen/scry_test_core"},
       files: ~w(lib .formatter.exs mix.exs README.md CHANGELOG.md LICENSE)
     ]
   end
@@ -123,7 +140,7 @@ defmodule ScryTestEngineCore.MixProject do
   defp docs do
     [
       main: "readme",
-      source_url: "https://github.com/joetjen/scry_test_engine_core",
+      source_url: "https://github.com/joetjen/scry_test_core",
       source_ref: "v#{@version}",
       extras: extras()
     ]
