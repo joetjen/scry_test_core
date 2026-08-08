@@ -14,7 +14,8 @@ defmodule Mix.Tasks.Scry.Bench do
       this, with none of Scry's own parsing/execution overhead.
     * **`sqlite`** -- the same query, as Scry query text, through
       `Scry.Core.Executor.run/4` and `Scry.Engine.Exqlite` (real
-      `fetch/3` `WHERE`-clause pushdown, batched `multi_step/3`
+      `execute/3` SQL compilation -- `WHERE`/`GROUP BY`/aggregate
+      pushdown all in one native statement, batched `multi_step/3`
       fetching, a connection opened once and reused across every
       query) -- answers "how much does going through Scry actually
       cost, on top of the same database".
@@ -478,14 +479,30 @@ defmodule Mix.Tasks.Scry.Bench do
     {:ok, sqlite_conn} = Scry.Engine.Exqlite.Conn.open(db_path)
     db = sqlite_conn.db
 
+    # Every column below is genuinely always populated by `gen_users/3`/
+    # `gen_orders/4` -- `NOT NULL` states that real guarantee to SQLite's
+    # own schema. `Scry.Engine.Exqlite`'s `execute/3` requires it before
+    # pushing a `WHERE`/aggregate down at all (its own moduledoc has the
+    # full correctness reasoning); an untyped, nullable-by-default column
+    # would make every `sqlite`-backend query below decline instead of
+    # measuring the real pushdown cost this task exists to report.
     :ok =
       Exqlite.Sqlite3.execute(db, """
-      CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, age INTEGER, status TEXT)
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        age INTEGER NOT NULL,
+        status TEXT NOT NULL
+      )
       """)
 
     :ok =
       Exqlite.Sqlite3.execute(db, """
-      CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, total INTEGER)
+      CREATE TABLE orders (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        total INTEGER NOT NULL
+      )
       """)
 
     ets_conn =

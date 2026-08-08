@@ -4,6 +4,19 @@
 
 ### Changed
 
+- Validated against `scry_core`'s new single authoritative `Scry.Core.EngineBehaviour.execute/3` callback, replacing `fetch/2,3,4`/`aggregate/5` entirely (see `scry_core`'s own `CHANGELOG.md`). `Scry.Test.Core.Conn.sqlite/1`'s generated schema now declares a real column type (`INTEGER`/`REAL`/`TEXT`, inferred from `Scry.Test.Core.Seed`'s own consistent per-column Elixir value types) and `NOT NULL` on every column, both genuinely true of this fixed dataset and required for `Scry.Engine.Exqlite`'s own `execute/3` to push a `WHERE`/aggregate/ordering comparison down at all -- an untyped, nullable-by-default column would otherwise decline nearly every query in `parity_test.exs`'s own suite. `mix scry.bench`'s own generated `users`/`orders` tables get the identical `NOT NULL` treatment for the same reason (every column there is genuinely always populated by its own row generator). `conn_test.exs`/`native_builder_test.exs`'s "unknown source" tests updated to the new two-constructor error shape (`{:query_error, detail}`, `detail` itself varying by engine rather than a single synthesized `{:no_such_source, source}}` every backend used to produce identically).
+
+  **Re-measured `mix scry.bench --users 1000000` against this pivot, the concrete before/after proof it was worth it** (previous numbers, same scale: `avg(age)` 8.6x-12.9x raw SQL, `GROUP BY user_id` 11.5x-15.3x):
+
+  | query | raw sql | sqlite (via Scry) | overhead |
+  |---|---|---|---|
+  | point lookup (`WHERE id = <mid> LIMIT 1`) | 29.7 µs | 229.3 µs | 7.73x (fixed per-call cost at microsecond scale, not a scaling problem) |
+  | `avg(age)`, no `GROUP BY` | 28.7 ms | 27.75 ms | **1.03x** |
+  | `GROUP BY status` (3 groups) + `count`/`avg(age)` | 257.28 ms | 250.69 ms | **1.03x** |
+  | `GROUP BY user_id` (~1,000,000 groups, adversarial) | 673.33 ms | 1.306 s | **1.94x** |
+
+  `avg`/`GROUP BY status` now run at native-SQL parity (real `AVG()`/`GROUP BY` pushdown, no Elixir-side re-walk); the adversarial 1,000,000-group case drops from 11.5x-15.3x to 1.94x, the remaining gap now genuinely just row-materialization cost (1,000,000 SQLite rows decoded into 1,000,000 Elixir maps) rather than a full duplicate re-computation.
+
 - `mix scry.bench` now runs every query against a `raw sql` backend too -- the equivalent query issued directly against the open SQLite connection via `Exqlite.Sqlite3`, bypassing Scry entirely -- alongside `sqlite` (Scry query text through `Scry.Core.Executor.run/4`/`Scry.Engine.Exqlite`) and, with `--compare-ets`, `ets`. A new "Scry overhead" comparison table converts the `raw sql` vs. `sqlite` durations into a plain "N.NNx" reading per query, answering "how much does going through Scry actually cost on top of the same database" directly, not just by eyeballing two separate numbers.
 
 - `mix scry.bench` now asks for confirmation before generating anything or running any query -- at the default scale this can take several minutes and uses real CPU/memory/disk, and the task previously gave no indication anything was happening at all until it finished (its own original failure mode, killed mid-run for looking hung). `--yes`/`-y` skips the prompt for scripted/non-interactive use. Database generation now prints its own progress in place (`\r`-updated, rows written so far / total, every 250,000 rows) instead of going silent until done; every benchmarked query prints a line as each of its warmup/timed runs starts and finishes, not just a single aggregate result once all iterations are over. The final summary renders as a box-drawn table (was plain `|`-separated columns); `--compare-ets` runs now also print a second table converting the raw sqlite/ets durations into a plain "N.NNx faster" reading per query.

@@ -52,7 +52,13 @@ defmodule Scry.Test.Core.ConnTest do
         {engine, conn} = apply(Conn, unquote(constructor), [@custom_data])
 
         {:ok, query} = Scry.Core.parse(~s(SELECT nonexistent { name }))
-        assert {:error, {:no_such_source, ["nonexistent"]}} = Executor.run(query, engine, conn)
+
+        # Every engine reports a genuine failure as {:query_error, detail}
+        # (Scry.Core.EngineBehaviour's own two-constructor error() shape) --
+        # `detail` itself isn't part of that contract, so it varies: a
+        # synthesized {:no_such_source, source} tuple for in_memory/ets,
+        # SQLite's own raw driver error string for sqlite.
+        assert {:error, {:query_error, _detail}} = Executor.run(query, engine, conn)
       end
     end
   end

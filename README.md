@@ -117,8 +117,8 @@ aggregate over the whole table, and both a low- and a high-cardinality
 issued directly against the connection via `Exqlite.Sqlite3`,
 bypassing Scry entirely -- the baseline), `sqlite` (the same query as
 Scry query text, through `Scry.Core.Executor.run/4` and `Scry.Engine.
-Exqlite`, real `fetch/3` pushdown included -- answers "what does going
-through Scry actually cost"), and, with `--compare-ets`, `ets` (the
+Exqlite`, real `execute/3` SQL compilation included -- answers "what
+does going through Scry actually cost"), and, with `--compare-ets`, `ets` (the
 same query again against a comparably-sized `Scry.Engine.ETS`
 dataset). For each query/backend: rows returned, duration (avg/min/
 median/max/stddev across several timed iterations, plus total), and

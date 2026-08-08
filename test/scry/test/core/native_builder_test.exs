@@ -112,11 +112,11 @@ defmodule Scry.Test.Core.NativeBuilderTest do
     assert built_rows == [%{"name" => "Bob", "age" => 17}]
   end
 
-  test "fetch/2 surfaces an unknown source as an error instead of raising, via the native builder",
+  test "execute/3 surfaces an unknown source as an error instead of raising, via the native builder",
        %{engine: engine, conn: conn} do
     query = from(x in "nonexistent", select: %{name: x.name})
 
-    assert {:error, {:no_such_source, ["nonexistent"]}} =
+    assert {:error, {:query_error, {:no_such_source, ["nonexistent"]}}} =
              Executor.run(query, engine, conn) |> materialize()
   end
 end

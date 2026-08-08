@@ -32,15 +32,20 @@ defmodule Scry.Test.Core.Conn do
 
   `sqlite/1`'s own database lives entirely in memory (`":memory:"`, an
   ordinary SQLite feature -- no temp file, nothing to clean up, a fresh
-  database on every call) and creates each table with no declared
-  column types (SQLite's own untyped/`BLOB`-affinity columns store
-  whatever value type they're given as-is, exactly matching this
-  dataset's own already-consistent, hand-authored typing) -- this is
+  database on every call) and creates each table with a real column
+  type (`INTEGER`/`REAL`/`TEXT`, inferred per column from the seed
+  data's own consistent Elixir value type) and `NOT NULL` on every
+  column -- both genuinely true of this fixed, hand-authored dataset,
+  and required for `Scry.Engine.Exqlite`'s own `execute/3` to push a
+  `WHERE`/aggregate/ordering comparison down at all (its own moduledoc
+  has the full schema-level correctness reasoning; an untyped,
+  nullable-by-default column would make it decline nearly every query
+  in this package's own parity suite for no real reason). This is
   test-fixture generation from this package's own trusted `Seed` data
   (or a caller's own trusted test data), not a real adapter accepting
   arbitrary query input, so table/column names are interpolated
   directly rather than validated the way `Scry.Engine.Exqlite`'s own
-  `fetch/2,3` treat a `source` (untrusted, query-supplied) value.
+  `execute/3` treats a `source` (untrusted, query-supplied) value.
   """
 
   alias Scry.Engine.ETS
@@ -61,7 +66,7 @@ defmodule Scry.Test.Core.Conn do
   `{Scry.Engine.ETS, conn}`, the same dataset loaded into one ETS table
   per source, keyed by `Scry.Test.Core.Seed.keys/0` -- so a query
   filtering on a table's own `id` genuinely exercises `Scry.Engine.
-  ETS`'s own `fetch/3` O(1) lookup path, not just its full-scan
+  ETS`'s own `execute/3` O(1) lookup path, not just its full-scan
   fallback.
   """
   @spec ets(data()) :: {module(), ETS.Conn.t()}
@@ -73,7 +78,7 @@ defmodule Scry.Test.Core.Conn do
   `{Scry.Engine.Exqlite, conn}`, the same dataset loaded into a fresh
   in-memory SQLite database -- a real `Scry.Engine.Exqlite.Conn`, so a
   query filtering on a plain field genuinely exercises `Scry.Engine.
-  Exqlite`'s own `fetch/3` `WHERE`-clause pushdown, not just its
+  Exqlite`'s own `execute/3` `WHERE`-clause pushdown, not just its
   full-scan fallback.
   """
   @spec sqlite(data()) :: {module(), SqliteEngine.Conn.t()}
@@ -85,11 +90,29 @@ defmodule Scry.Test.Core.Conn do
 
   defp load_table(_conn, _table, []), do: :ok
 
+  # Every column in `Scry.Test.Core.Seed`'s own fixed dataset is
+  # genuinely never `nil`, and each has one consistent Elixir type
+  # across every row -- declaring a real column type plus `NOT NULL`
+  # here states both guarantees to SQLite's own schema, rather than
+  # leaving every column untyped and nullable by default.
+  # `Scry.Engine.Exqlite`'s `execute/3` now requires a schema-level
+  # `NOT NULL` guarantee before pushing a `WHERE`/aggregate down at
+  # all, and an ordering comparison's (`<`/`>`/`<=`/`>=`) own column
+  # type affinity to genuinely match the compared literal's type (its
+  # own moduledoc has the full correctness reasoning) -- an untyped,
+  # nullable-by-default column here would make it decline nearly every
+  # query in this package's own parity suite, not because the data is
+  # actually unsafe, just because the schema never said so.
   defp load_table(%SqliteEngine.Conn{db: db}, table, [first_row | _] = rows) do
     columns = first_row |> Map.keys() |> Enum.sort()
     column_list = Enum.join(columns, ", ")
 
-    :ok = Exqlite.Sqlite3.execute(db, "CREATE TABLE #{table} (#{column_list})")
+    column_defs =
+      columns
+      |> Enum.map(&"#{&1} #{sql_type(Map.fetch!(first_row, &1))} NOT NULL")
+      |> Enum.join(", ")
+
+    :ok = Exqlite.Sqlite3.execute(db, "CREATE TABLE #{table} (#{column_defs})")
 
     placeholders = columns |> Enum.map(fn _ -> "?" end) |> Enum.join(", ")
 
@@ -106,4 +129,12 @@ defmodule Scry.Test.Core.Conn do
 
     Exqlite.Sqlite3.release(db, stmt)
   end
+
+  # Maps an Elixir value to a SQL type declaration whose own SQLite
+  # type affinity (`Scry.Engine.Exqlite`'s own 5-rule algorithm) genuinely
+  # matches how this dataset's own values compare -- an integer or float
+  # both need `:numeric` affinity, a string needs `:text`.
+  defp sql_type(value) when is_integer(value), do: "INTEGER"
+  defp sql_type(value) when is_float(value), do: "REAL"
+  defp sql_type(value) when is_binary(value), do: "TEXT"
 end
