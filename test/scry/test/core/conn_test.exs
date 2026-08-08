@@ -13,11 +13,14 @@ defmodule Scry.Test.Core.ConnTest do
 
   use ExUnit.Case, async: true
 
-  alias Scry.Core.{Cursor, Executor}
+  alias Scry.Core.{Cursor, Executor, Row}
   alias Scry.Test.Core.{Conn, Seed}
 
-  defp materialize({:ok, cursor}), do: {:ok, Cursor.to_list(cursor)}
+  defp materialize({:ok, cursor}), do: {:ok, cursor |> Cursor.to_list() |> Enum.map(&to_plain/1)}
   defp materialize({:error, _} = err), do: err
+
+  defp to_plain(%Row{} = row), do: Row.to_map(row)
+  defp to_plain(row), do: row
 
   @custom_data %{
     ["users"] => [
@@ -61,5 +64,14 @@ defmodule Scry.Test.Core.ConnTest do
         assert {:error, {:query_error, _detail}} = Executor.run(query, engine, conn)
       end
     end
+  end
+
+  test "sqlite/1's own rows genuinely come back as Scry.Core.Row values for a flat query" do
+    {engine, conn} = Conn.sqlite(@custom_data)
+
+    {:ok, query} = Scry.Core.parse(~s(SELECT users WHERE age > 18 { name }))
+    assert {:ok, cursor} = Executor.run(query, engine, conn)
+    assert [%Row{} = row] = Cursor.to_list(cursor)
+    assert Row.to_map(row) == %{"name" => "Alice"}
   end
 end

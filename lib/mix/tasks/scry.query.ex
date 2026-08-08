@@ -74,10 +74,21 @@ defmodule Mix.Tasks.Scry.Query do
   # `{:error, reason}` shape `fetch_query_source/2`/`Scry.Core.parse/1`
   # already use, for one shared error-formatting path below.
   defp materialize(cursor) do
-    {:ok, Scry.Core.Cursor.to_list(cursor)}
+    {:ok, cursor |> Scry.Core.Cursor.to_list() |> Enum.map(&to_plain_row/1)}
   rescue
     e in Scry.Core.Executor.QueryError -> {:error, e.reason}
   end
+
+  # The `sqlite` backend's own direct pushdown path returns `Scry.
+  # Core.Row` values now (real, measured cost avoided for a caller
+  # that doesn't need every field of every row -- `Scry.Engine.
+  # Exqlite`'s own CHANGELOG.md has the full reasoning) -- this task
+  # always wants a human-readable result printed, so it converts back
+  # to an ordinary map first, exactly the use `Row.to_map/1`'s own
+  # moduledoc names ("for tests/debugging, or wherever a real map is
+  # genuinely needed").
+  defp to_plain_row(%Scry.Core.Row{} = row), do: Scry.Core.Row.to_map(row)
+  defp to_plain_row(row), do: row
 
   # A parse failure is one (or a list of) %Ichor.Error{} -- formatted
   # via its own format/1 (ichor_runtime, a real runtime dependency

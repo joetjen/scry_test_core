@@ -22,12 +22,15 @@ defmodule Scry.Test.Core.ParityTest do
 
   use ExUnit.Case, async: true
 
-  alias Scry.Core.{Cursor, Executor}
+  alias Scry.Core.{Cursor, Executor, Row}
   alias Scry.Test.Core.Conn
 
   import Scry.Core.Query
 
-  defp materialize({:ok, cursor}), do: {:ok, Cursor.to_list(cursor)}
+  defp materialize({:ok, cursor}), do: {:ok, cursor |> Cursor.to_list() |> Enum.map(&to_plain/1)}
+
+  defp to_plain(%Row{} = row), do: Row.to_map(row)
+  defp to_plain(row), do: row
 
   # `sort_key` puts every backend's own rows into the same deterministic
   # order before comparing -- necessary, not cosmetic: none of these

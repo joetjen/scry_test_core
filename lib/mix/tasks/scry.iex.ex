@@ -149,10 +149,17 @@ defmodule Mix.Tasks.Scry.Iex do
   # lazily-raised `Scry.Core.Executor.QueryError` needs to fold back into
   # the same `{:error, reason}` shape the `with` above already handles.
   defp materialize(cursor) do
-    {:ok, Scry.Core.Cursor.to_list(cursor)}
+    {:ok, cursor |> Scry.Core.Cursor.to_list() |> Enum.map(&to_plain_row/1)}
   rescue
     e in Scry.Core.Executor.QueryError -> {:error, e.reason}
   end
+
+  # Same reasoning `mix scry.query` uses -- the `sqlite` backend's own
+  # direct pushdown path returns `Scry.Core.Row` values now, converted
+  # back to an ordinary map here so this REPL always prints a
+  # human-readable result regardless of backend.
+  defp to_plain_row(%Scry.Core.Row{} = row), do: Scry.Core.Row.to_map(row)
+  defp to_plain_row(row), do: row
 
   # Same formatting `mix scry.query` uses -- a parse failure is one (or
   # a list of) %Ichor.Error{}, formatted via its own format/1 rather
