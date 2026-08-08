@@ -71,7 +71,11 @@ defmodule Mix.Tasks.Scry.Bench do
   every benchmarked query prints a line as each of its warmup/timed
   runs starts and finishes -- the concrete fix for this task's own
   original failure mode, a run that looked hung with no way to tell it
-  apart from one that was just slow.
+  apart from one that was just slow. A single call with no count of its
+  own to report (a query still running mid-iteration, measuring memory,
+  building an index) instead gets a small ASCII spinner (`| / - \`,
+  updated in place the same way) -- the same "still alive, not hung"
+  signal, for the case `report_progress/2` itself doesn't cover.
 
   ## What's reported, per query
 
@@ -106,6 +110,8 @@ defmodule Mix.Tasks.Scry.Bench do
   @default_iterations 3
   @batch_size 10_000
   @progress_interval 250_000
+  @spinner_frames ~w(| / - \\)
+  @spinner_interval_ms 120
 
   @impl Mix.Task
   def run(argv) do
@@ -255,24 +261,21 @@ defmodule Mix.Tasks.Scry.Bench do
   defp benchmark(label, short_label, backend_name, iterations, fun) do
     IO.puts("\nRunning: #{label} [#{backend_name}]")
 
-    IO.write("  warmup...")
-    {warmup_us, _} = :timer.tc(fun)
-    IO.puts(" #{format_duration(warmup_us)}")
+    {warmup_us, _} = tc_with_spinner("  warmup...", fun)
+    IO.puts("\r  warmup... #{format_duration(warmup_us)}")
 
     timings =
       for i <- 1..iterations do
-        IO.write("  iteration #{i}/#{iterations}...")
-        {us, rows} = :timer.tc(fun)
-        IO.puts(" #{format_duration(us)}")
+        {us, rows} = tc_with_spinner("  iteration #{i}/#{iterations}...", fun)
+        IO.puts("\r  iteration #{i}/#{iterations}... #{format_duration(us)}")
         {us, rows}
       end
 
     durations_us = Enum.map(timings, &elem(&1, 0))
     rows = timings |> List.first() |> elem(1)
 
-    IO.write("  measuring memory...")
     mem = measure_memory(fun)
-    IO.puts(" done")
+    IO.puts("\r  measuring memory... done")
 
     result = %{
       query: short_label,
@@ -323,7 +326,7 @@ defmodule Mix.Tasks.Scry.Bench do
     Process.sleep(50)
     before_mem = :erlang.memory(:total)
 
-    fun.()
+    run_with_spinner("  measuring memory...", fun)
 
     immediate = :erlang.memory(:total)
     :erlang.garbage_collect()
@@ -496,9 +499,12 @@ defmodule Mix.Tasks.Scry.Bench do
     IO.puts("Generating #{format_int(order_count)} orders...")
     ets_conn = gen_orders(db, ets_conn, order_count, user_count)
 
-    IO.write("Creating indexes...")
-    :ok = Exqlite.Sqlite3.execute(db, "CREATE INDEX idx_orders_user_id ON orders(user_id)")
-    IO.puts(" done.")
+    :ok =
+      run_with_spinner("Creating indexes...", fn ->
+        Exqlite.Sqlite3.execute(db, "CREATE INDEX idx_orders_user_id ON orders(user_id)")
+      end)
+
+    IO.puts("\rCreating indexes... done.")
 
     {sqlite_conn, ets_conn}
   end
@@ -580,4 +586,43 @@ defmodule Mix.Tasks.Scry.Bench do
 
   defp put_batch(nil, _source, _rows), do: nil
   defp put_batch(ets_conn, source, rows), do: Scry.Engine.ETS.Conn.put(ets_conn, source, rows)
+
+  # `report_progress/2` above is the right tool whenever there's a real
+  # count to show (rows generated so far); a single call with no
+  # internal progress of its own (running one query, measuring memory,
+  # building an index) has nothing to count, so the only honest signal
+  # left is "still alive, not hung" -- an ASCII spinner via the same
+  # `\r`-repaint technique. Runs `fun` in a separate `Task` purely so
+  # this process is free to keep printing while `fun` itself blocks;
+  # `fun`'s own result and any crash both propagate normally (a crash
+  # re-raises with its original kind/stacktrace via `Task.yield/2`'s
+  # own `{:exit, reason}` shape, never silently swallowed).
+  defp run_with_spinner(prefix, fun) do
+    fun |> Task.async() |> spin(prefix, 0)
+  end
+
+  defp spin(task, prefix, frame_index) do
+    case Task.yield(task, @spinner_interval_ms) do
+      {:ok, result} ->
+        result
+
+      {:exit, reason} ->
+        exit(reason)
+
+      nil ->
+        frame = Enum.at(@spinner_frames, rem(frame_index, length(@spinner_frames)))
+        IO.write("\r#{prefix} #{frame}")
+        spin(task, prefix, frame_index + 1)
+    end
+  end
+
+  # Same spinner, `:timer.tc/1`-shaped -- for the two call sites
+  # (`benchmark/5`'s own warmup/timed iterations) that need the elapsed
+  # time, not just the liveness indicator.
+  defp tc_with_spinner(prefix, fun) do
+    start = System.monotonic_time()
+    result = run_with_spinner(prefix, fun)
+    elapsed_us = System.convert_time_unit(System.monotonic_time() - start, :native, :microsecond)
+    {elapsed_us, result}
+  end
 end

@@ -142,8 +142,11 @@ CPU/memory/disk, so the task asks for confirmation before doing any of
 that work; `--yes` (or `-y`) skips the prompt for scripted use. Once
 confirmed, it never goes silent: database generation prints its own
 progress in place as rows are written, and every benchmarked query
-prints a line as each warmup/timed run starts and finishes -- so a slow
-run and a hung one are never impossible to tell apart. Results print as
+prints a line as each warmup/timed run starts and finishes, with a
+small ASCII spinner (`| / - \`) animating in place while that
+individual run/memory-measurement/index-build is still in flight -- so
+a slow run and a hung one are never impossible to tell apart. Results
+print as
 a boxed summary table, followed by a "Scry overhead" table converting
 the raw `raw sql` vs. `sqlite` durations into a plain "N.NNx" reading
 per query -- and, with `--compare-ets`, a second comparison table for
