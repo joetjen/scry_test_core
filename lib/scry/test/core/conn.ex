@@ -1,6 +1,6 @@
 defmodule Scry.Test.Core.Conn do
   @moduledoc """
-  Four constructors, one shared dataset -- each returns a ready
+  Five constructors, one shared dataset -- each returns a ready
   `{engine_module, conn}` pair, straight into `Scry.Core.Executor.run/3,4`'s
   own second and third arguments, backed by a real `Scry.Core.
   EngineBehaviour` implementation instead of this package rolling its
@@ -16,13 +16,33 @@ defmodule Scry.Test.Core.Conn do
     * `postgres/1` -- `Scry.Engine.Postgrex`, the same rows loaded into
       a real, external Postgres (see its own doc below for the one real
       way this constructor differs from the other three).
+    * `timescaledb/1` -- `Scry.Engine.Postgrex` again, **entirely
+      unmodified**, pointed at a real, external TimescaleDB instead of
+      plain Postgres. This exists to answer a real question empirically
+      rather than just assert it: impl_spec.md's own roadmap names
+      `scry_engine_timescaledb` as a from-scratch adapter meant to
+      validate the `scry_reltime` composite (relational + time-series)
+      architecture. Investigation found nothing for a dedicated adapter
+      to actually do differently -- TimescaleDB speaks the plain
+      Postgres wire protocol, and the language has no time-bucketing/
+      hypertable-specific construct yet to compile specially. `Scry.
+      TimeSeries.Executor.run/5` already lowers `LAST` into an ordinary
+      `WHERE` predicate before any engine ever sees it (recursively,
+      including inside a nested/correlated `SELECT` -- Scry's own
+      `JOIN`-equivalent), so the composite's real value already exists
+      with zero new code, against any plain `Scry.Core.EngineBehaviour`
+      engine. `timescaledb/1` is that empirical proof: the exact same
+      `Scry.Engine.Postgrex` module `postgres/1` uses, unmodified,
+      against a real TimescaleDB container -- not a rewrite, not a
+      simulation.
 
-  All four default to `Scry.Test.Core.Seed.data()` when called with no
-  argument -- the same dataset, four different backends, so a query
+  All five default to `Scry.Test.Core.Seed.data()` when called with no
+  argument -- the same dataset, five different backends, so a query
   run against each is directly comparable (see `test/scry/test/core/
-  parity_test.exs`'s own genuine 3-way parity tests, and `test/scry/
-  test/core/postgres_parity_test.exs` for `postgres/1`'s own, kept
-  separate -- see that file's own moduledoc for why). Passing a custom
+  parity_test.exs`'s own genuine 3-way parity tests, `test/scry/
+  test/core/postgres_parity_test.exs` for `postgres/1`'s own, and
+  `timescaledb_parity_test.exs` for `timescaledb/1`'s own, each kept
+  separate -- see those files' own moduledocs for why). Passing a custom
   `data()` map still works on every constructor, same shape `Conn.new/1`
   used to accept on this package's own now-removed engine.
 
@@ -53,15 +73,16 @@ defmodule Scry.Test.Core.Conn do
   directly rather than validated the way `Scry.Engine.Exqlite`'s own
   `execute/3` treats a `source` (untrusted, query-supplied) value.
 
-  **`postgres/1` is genuinely different from the other three in one
-  real way, not just a fourth coat of paint**: `in_memory/1`/`ets/1`
-  are plain in-process data, and `sqlite/1` opens a brand-new
+  **`postgres/1`/`timescaledb/1` are genuinely different from the other
+  three in one real way, not just further coats of paint**: `in_memory/1`/
+  `ets/1` are plain in-process data, and `sqlite/1` opens a brand-new
   `:memory:` database per call -- all three are automatically,
   freshly isolated on every single call, safe under `async: true` with
-  no extra thought. A real Postgres is a *persistent, shared, external*
-  service instead -- calling `postgres/1` twice hits the *same*
-  physical tables. `postgres_connection_opts/0` always points at the
-  same fixed `public`-schema tables `sqlite/1` conceptually mirrors
+  no extra thought. A real Postgres/TimescaleDB is a *persistent,
+  shared, external* service instead -- calling either one twice hits
+  the *same* physical tables. `postgres_connection_opts/0`/
+  `timescaledb_connection_opts/0` each always point at the same fixed
+  `public`-schema tables `sqlite/1` conceptually mirrors
   (`DROP TABLE IF EXISTS ... CASCADE` then recreate, on every call --
   idempotent and safe to call repeatedly, but genuinely **not** safe to
   call concurrently with itself). Deliberately not given per-call
@@ -70,15 +91,15 @@ defmodule Scry.Test.Core.Conn do
   `WHERE table_schema = 'public'` (that package's own accepted scope
   decision), so a non-`public` schema would make its own introspection
   -- and therefore the `NOT NULL` gate every pushed-down query needs --
-  silently find nothing. Every test exercising `postgres/1` runs
-  `async: false` for exactly this reason (`test/scry/test/core/
-  postgres_parity_test.exs`/`postgres_conn_test.exs`'s own moduledocs).
-  Also unlike the other three: these tables persist in whatever
-  Postgres `postgres/1` was pointed at until the next call recreates
-  them (or the database is torn down) -- there is no `:memory:`-style
-  automatic cleanup, the same way none of `in_memory/1`/`ets/1`/
-  `sqlite/1` has an explicit `close/1` call site anywhere in this
-  package either.
+  silently find nothing. Every test exercising `postgres/1`/`timescaledb/1`
+  runs `async: false` for exactly this reason (`test/scry/test/core/
+  postgres_parity_test.exs`/`postgres_conn_test.exs`/`timescaledb_parity_test.exs`/
+  `timescaledb_conn_test.exs`'s own moduledocs). Also unlike the other
+  three: these tables persist in whatever Postgres/TimescaleDB either
+  constructor was pointed at until the next call recreates them (or the
+  database is torn down) -- there is no `:memory:`-style automatic
+  cleanup, the same way none of `in_memory/1`/`ets/1`/`sqlite/1` has an
+  explicit `close/1` call site anywhere in this package either.
   """
 
   alias Scry.Engine.ETS
@@ -144,6 +165,39 @@ defmodule Scry.Test.Core.Conn do
     {:ok, conn} = Postgres.Conn.open(postgres_connection_opts())
     Enum.each(data, fn {[table], rows} -> load_postgres_table(conn, table, rows) end)
     {Postgres, conn}
+  end
+
+  @doc """
+  `{Scry.Engine.Postgrex, conn}` again -- the exact same module
+  `postgres/1` uses, unmodified, pointed at a real, external
+  TimescaleDB instead of plain Postgres. This module's own moduledoc
+  has the full reasoning for why this constructor exists at all (empirical
+  proof that the `scry_reltime` composite architecture's real value
+  already exists with zero TimescaleDB-specific code, not a dedicated
+  adapter).
+
+  Connection options come from `TSDB_HOST`/`TSDB_PORT`/`TSDB_USER`/
+  `TSDB_PASSWORD`/`TSDB_DATABASE`, defaulting to this package's own
+  `docker-compose.yml` service (`localhost:5434`, user/password `scry`,
+  database `scry_test_core_timescaledb`) -- a deliberately different
+  host port and database name than `postgres/1`'s own service, so both
+  containers can run at once with no collision.
+  """
+  @spec timescaledb(data()) :: {module(), Postgres.Conn.t()}
+  def timescaledb(data \\ Seed.data()) when is_map(data) do
+    {:ok, conn} = Postgres.Conn.open(timescaledb_connection_opts())
+    Enum.each(data, fn {[table], rows} -> load_postgres_table(conn, table, rows) end)
+    {Postgres, conn}
+  end
+
+  defp timescaledb_connection_opts do
+    [
+      hostname: System.get_env("TSDB_HOST", "localhost"),
+      port: String.to_integer(System.get_env("TSDB_PORT", "5434")),
+      username: System.get_env("TSDB_USER", "scry"),
+      password: System.get_env("TSDB_PASSWORD", "scry"),
+      database: System.get_env("TSDB_DATABASE", "scry_test_core_timescaledb")
+    ]
   end
 
   defp postgres_connection_opts do

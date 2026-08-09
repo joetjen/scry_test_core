@@ -2,16 +2,17 @@
 
 Shared test/benchmark fixtures for
 [`scry_core`](https://github.com/joetjen/scry_core): one seed dataset
-(`Scry.Test.Core.Seed`), servable through four real `Scry.Core.
+(`Scry.Test.Core.Seed`), servable through five real `Scry.Core.
 EngineBehaviour` backends via `Scry.Test.Core.Conn`:
 
 - `Conn.in_memory/1` → [`scry_engine_inmemory`](https://github.com/joetjen/scry_engine_inmemory)'s `Scry.Engine.InMemory` (no pushdown at all)
 - `Conn.ets/1` → [`scry_engine_ets`](https://github.com/joetjen/scry_engine_ets)'s `Scry.Engine.ETS` (real O(1) key-lookup pushdown)
 - `Conn.sqlite/1` → [`scry_engine_exqlite`](https://github.com/joetjen/scry_engine_exqlite)'s `Scry.Engine.Exqlite` (real SQL `WHERE`-clause pushdown)
-- `Conn.postgres/1` → [`scry_engine_postgrex`](https://github.com/joetjen/scry_engine_postgrex)'s `Scry.Engine.Postgrex` (real SQL pushdown against a real, external Postgres -- the only constructor needing `docker compose up -d` first; see below)
+- `Conn.postgres/1` → [`scry_engine_postgrex`](https://github.com/joetjen/scry_engine_postgrex)'s `Scry.Engine.Postgrex` (real SQL pushdown against a real, external Postgres -- needs `docker compose up -d` first; see below)
+- `Conn.timescaledb/1` → the exact same `Scry.Engine.Postgrex`, unmodified, against a real, external TimescaleDB instead -- empirical proof that a dedicated `scry_engine_timescaledb` adapter has nothing unique to do today (see below)
 
 Plus `scry_core`'s own `mix scry.query`/`mix scry.iex` (configured
-here to use the four constructors above) and this package's own `mix
+here to use the constructors above) and this package's own `mix
 scry.bench`, for exercising them. Not for production use.
 
 Named `scry_test_core`, not `scry_engine_..._<driver>`, to keep this
@@ -58,24 +59,45 @@ realistic, multi-table dataset -- `users`/`products`/`orders`/
 an empty connection, for exploring or testing against something with
 real relationships to correlate across without hand-authoring your own
 fixture rows first. `Scry.Test.Core.Seed`'s own moduledoc documents the
-exact shape of every table; the same dataset backs all four engines,
+exact shape of every table; the same dataset backs every engine,
 so a query run against each is directly comparable (see
 `test/scry/test/core/parity_test.exs`'s own genuine 3-way parity tests
-for `in_memory`/`ets`/`sqlite`, and `postgres_parity_test.exs` for
-`postgres/1`'s own, kept separate -- see that file's own moduledoc for
-why).
+for `in_memory`/`ets`/`sqlite`, `postgres_parity_test.exs` for
+`postgres/1`'s own, and `timescaledb_parity_test.exs` for
+`timescaledb/1`'s own, each kept separate -- see those files' own
+moduledocs for why).
 
-### `postgres/1` needs a real, external Postgres
+### `postgres/1`/`timescaledb/1` need a real, external Postgres/TimescaleDB
 
 Unlike the other three (freely, automatically isolated per call),
-`postgres/1` is backed by a real, persistent, external Postgres --
-`docker compose up -d` (this package's own root `docker-compose.yml`,
-`localhost:5433` by default) before using it. `Conn.postgres/1`'s own
-moduledoc has the full reasoning for the one real way it differs from
-the other three (idempotent, not concurrency-safe with itself). Its own
-tests are tagged `:postgres` and excluded from the default `mix test`/
-`mix precommit` for exactly this reason -- run `mix test.postgres`
-(with Docker up) to include them.
+`postgres/1`/`timescaledb/1` are each backed by a real, persistent,
+external service -- `docker compose up -d` (this package's own root
+`docker-compose.yml`, `localhost:5433`/`localhost:5434` by default)
+before using either. `Conn.postgres/1`'s own moduledoc has the full
+reasoning for the one real way both differ from the other three
+(idempotent, not concurrency-safe with itself). Their own tests are
+tagged `:postgres`/`:timescaledb` and excluded from the default
+`mix test`/`mix precommit` for exactly this reason -- run
+`mix test.postgres`/`mix test.timescaledb` (with Docker up) to include
+them.
+
+`timescaledb/1` runs through `Scry.Engine.Postgrex` -- the exact same
+module `postgres/1` uses, entirely unmodified -- against a real
+TimescaleDB container instead of plain Postgres. This isn't a second
+adapter to maintain: it's the empirical answer to a question
+`impl_spec.md`'s own roadmap left open, that a dedicated
+`scry_engine_timescaledb` package would validate the `scry_reltime`
+composite (relational + time-series) architecture. TimescaleDB speaks
+the plain Postgres wire protocol, and the language has no
+time-bucketing/hypertable construct yet to compile specially, so there
+is nothing for a dedicated adapter to do differently today --
+`Scry.TimeSeries.Executor.run/5` already lowers `LAST` into an ordinary
+`WHERE` predicate before any engine ever sees it, recursively,
+including inside a nested/correlated `SELECT` (Scry's own
+`JOIN`-equivalent), so the composite's real value already exists with
+zero new code against any plain `Scry.Core.EngineBehaviour` engine.
+`timescaledb/1` proves that claim against a real container rather than
+just asserting it.
 
 ```elixir
 {engine, conn} = Scry.Test.Core.Conn.in_memory()
@@ -96,8 +118,8 @@ Both tasks live in `scry_core` itself now (a generic, config-driven
 pair any project depending on `scry_core` gets for free -- see that
 package's own README/`Scry.Core.QueryTool` moduledoc for the full
 config shape). This package's own `config/config.exs` registers its
-four `Scry.Test.Core.Conn` constructors as named backends
-(`in_memory`, the default, `ets`, `sqlite`, `postgres`), so from inside
+`Scry.Test.Core.Conn` constructors as named backends (`in_memory`, the
+default, `ets`, `sqlite`, `postgres`, `timescaledb`), so from inside
 this repo both tasks work exactly as before the move -- same names,
 same flags, same output:
 
@@ -116,11 +138,12 @@ scry> SELECT users
 scry>
 ```
 
-`--backend` picks `in_memory` (the default), `ets`, `sqlite`, or
-`postgres` (needs `docker compose up -d` first) -- same seed data
-either way, only *how* the answer is produced changes. For `mix
-scry.iex`: a query only runs once it parses -- pressing Enter
-mid-query keeps the prompt open (`...>`) for the next line, rather
+`--backend` picks `in_memory` (the default), `ets`, `sqlite`,
+`postgres`, or `timescaledb` (the latter two need `docker compose up -d`
+first) -- same seed data either way, only *how* the answer is produced
+changes. For `mix scry.iex`: a query only runs once it parses --
+pressing Enter mid-query keeps the prompt open (`...>`) for the next
+line, rather
 than erroring immediately; Ctrl+D exits; for Up/Down arrow-key history
 (recalling and re-running a previous query), run it as `iex -S mix
 scry.iex` instead -- plain `mix scry.iex` prints a reminder of this at

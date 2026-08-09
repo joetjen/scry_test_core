@@ -1,13 +1,14 @@
-# A disposable, local Postgres for running Scry.Test.Core.Conn.postgres/1
-# and its own tagged test files (`mix test.postgres`, see README.md) --
-# `docker compose up -d` first. Connection details here are the
-# defaults `Conn.postgres/1` assumes; override via PGHOST/PGPORT/
-# PGUSER/PGPASSWORD/PGDATABASE to point at a different Postgres
-# instead. Deliberately a different host port (5433, not 5432) and
-# database name than `scry_engine_postgrex`'s own compose service uses,
-# so both containers can run at once (e.g. working across both repos)
-# without a port clash, and the two packages' test data never collide
-# even if pointed at the same physical Postgres instance.
+# Disposable, local Postgres/TimescaleDB services for running
+# Scry.Test.Core.Conn.postgres/1 and .timescaledb/1 and their own
+# tagged test files (`mix test.postgres`/`mix test.timescaledb`, see
+# README.md) -- `docker compose up -d` first. Connection details here
+# are the defaults `Conn.postgres/1`/`.timescaledb/1` assume; override
+# via PGHOST/PGPORT/.../TSDB_HOST/TSDB_PORT/... to point at a different
+# instance instead. Deliberately different host ports/database names
+# than `scry_engine_postgrex`'s own compose service uses, so every
+# container can run at once (e.g. working across repos) with no port
+# clash, and no package's test data ever collides even if pointed at
+# the same physical Postgres instance.
 services:
   postgres:
     image: postgres:16
@@ -19,6 +20,26 @@ services:
       - "5433:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U scry -d scry_test_core"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  # TimescaleDB speaks the plain Postgres wire protocol -- this service
+  # exists purely to prove `Scry.Engine.Postgrex` (scry_engine_postgrex,
+  # entirely unmodified) works correctly against it, not because
+  # anything here needs TimescaleDB-specific SQL. See
+  # `Scry.Test.Core.Conn.timescaledb/1`'s own moduledoc bullet for the
+  # full reasoning.
+  timescaledb:
+    image: timescale/timescaledb:latest-pg16
+    environment:
+      POSTGRES_USER: scry
+      POSTGRES_PASSWORD: scry
+      POSTGRES_DB: scry_test_core_timescaledb
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scry -d scry_test_core_timescaledb"]
       interval: 2s
       timeout: 2s
       retries: 15

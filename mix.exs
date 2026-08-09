@@ -6,10 +6,10 @@ defmodule Scry.Test.Core.MixProject do
   # `mix precommit` includes `test` as a step; without this, Mix runs
   # the whole alias chain (including `mix test`) in :dev, and `mix test`
   # itself refuses to run outside :test when invoked as a sub-task
-  # rather than the top-level command. `test.postgres` needs the same
-  # treatment, for the same reason.
+  # rather than the top-level command. `test.postgres`/`test.timescaledb`
+  # need the same treatment, for the same reason.
   def cli do
-    [preferred_envs: [precommit: :test, "test.postgres": :test]]
+    [preferred_envs: [precommit: :test, "test.postgres": :test, "test.timescaledb": :test]]
   end
 
   def project do
@@ -136,7 +136,12 @@ defmodule Scry.Test.Core.MixProject do
       # `docker compose up -d` (this package's own root
       # `docker-compose.yml`) then `mix test.postgres` whenever a
       # change touches `Conn.postgres/1` or `scry_engine_postgrex`.
-      "test.postgres": ["test --include postgres"]
+      "test.postgres": ["test --include postgres"],
+      # Same reasoning, for `Conn.timescaledb/1` (and its own
+      # `timescaledb_parity_test.exs`/`timescaledb_conn_test.exs`) --
+      # tagged `:timescaledb`, needs `docker compose up -d` then
+      # `mix test.timescaledb`.
+      "test.timescaledb": ["test --include timescaledb"]
     ]
   end
 
