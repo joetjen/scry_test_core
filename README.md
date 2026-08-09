@@ -10,8 +10,9 @@ EngineBehaviour` backends via `Scry.Test.Core.Conn`:
 - `Conn.sqlite/1` → [`scry_engine_exqlite`](https://github.com/joetjen/scry_engine_exqlite)'s `Scry.Engine.Exqlite` (real SQL `WHERE`-clause pushdown)
 - `Conn.postgres/1` → [`scry_engine_postgrex`](https://github.com/joetjen/scry_engine_postgrex)'s `Scry.Engine.Postgrex` (real SQL pushdown against a real, external Postgres -- the only constructor needing `docker compose up -d` first; see below)
 
-Plus `mix scry.query`/`mix scry.iex`/`mix scry.bench` for exercising
-them. Not for production use.
+Plus `scry_core`'s own `mix scry.query`/`mix scry.iex` (configured
+here to use the four constructors above) and this package's own `mix
+scry.bench`, for exercising them. Not for production use.
 
 Named `scry_test_core`, not `scry_engine_..._<driver>`, to keep this
 class of package visually distinct from a real adapter at a glance --
@@ -89,23 +90,22 @@ rows = Scry.Core.Cursor.to_list(cursor)
 # rows == [%{"name" => "Alice", "orders" => [%{"id" => 1}]}, ...]
 ```
 
-### `mix scry.query` -- try a query from the command line
+### `mix scry.query`/`mix scry.iex` -- try a query from the command line
 
-Runs a query against the picked backend's own prefilled seed dataset
-and prints the resulting rows, without writing any Elixir code first:
+Both tasks live in `scry_core` itself now (a generic, config-driven
+pair any project depending on `scry_core` gets for free -- see that
+package's own README/`Scry.Core.QueryTool` moduledoc for the full
+config shape). This package's own `config/config.exs` registers its
+four `Scry.Test.Core.Conn` constructors as named backends
+(`in_memory`, the default, `ets`, `sqlite`, `postgres`), so from inside
+this repo both tasks work exactly as before the move -- same names,
+same flags, same output:
 
 ```console
 $ mix scry.query 'SELECT users WHERE status = "active" { name }'
 $ mix scry.query --file path/to/query.scry
 $ mix scry.query --backend ets 'SELECT users WHERE id = 1 { name }'
 ```
-
-`--backend` picks `in_memory` (the default), `ets`, `sqlite`, or
-`postgres` (needs `docker compose up -d` first) -- same seed data
-either way, only *how* the answer is produced changes. `mix help
-scry.query` has the full usage.
-
-### `mix scry.iex` -- an interactive, `iex`-like query prompt
 
 ```console
 $ mix scry.iex
@@ -116,16 +116,15 @@ scry> SELECT users
 scry>
 ```
 
-A query only runs once it parses -- pressing Enter mid-query keeps the
-prompt open (`...>`) for the next line, rather than erroring
-immediately. Ctrl+D exits. `--backend` works the same way it does for
-`mix scry.query`, for the whole session.
-
-For Up/Down arrow-key history (recalling and re-running a previous
-query), run it as `iex -S mix scry.iex` instead -- plain `mix scry.iex`
-prints a reminder of this at startup. `mix help scry.iex` has the full
-usage, including why (OTP's own interactive-shell line editing, not
-something this task implements itself).
+`--backend` picks `in_memory` (the default), `ets`, `sqlite`, or
+`postgres` (needs `docker compose up -d` first) -- same seed data
+either way, only *how* the answer is produced changes. For `mix
+scry.iex`: a query only runs once it parses -- pressing Enter
+mid-query keeps the prompt open (`...>`) for the next line, rather
+than erroring immediately; Ctrl+D exits; for Up/Down arrow-key history
+(recalling and re-running a previous query), run it as `iex -S mix
+scry.iex` instead -- plain `mix scry.iex` prints a reminder of this at
+startup. `mix help scry.query`/`mix help scry.iex` have the full usage.
 
 ### `mix scry.bench` -- benchmark `Scry.Core.Executor`'s real speed and memory
 

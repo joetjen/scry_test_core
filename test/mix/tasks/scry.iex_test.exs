@@ -1,9 +1,15 @@
 defmodule Mix.Tasks.Scry.IexTest do
   @moduledoc """
-  `mix scry.iex` -- a query only runs once it parses, a leading blank
-  line at the primary prompt is a no-op, a blank line mid-buffer forces
-  a stuck (never-going-to-parse) query through and shows the real
-  error instead of hanging forever, the prompt returns to normal
+  `Mix.Tasks.Scry.Iex` now lives in `scry_core` (a generic, config-
+  driven task any project depending on `scry_core` gets for free) --
+  this suite exercises it through this package's own `config/
+  config.exs` (`Scry.Test.Core.Conn`'s four constructors registered as
+  named backends), which doubles as the end-to-end proof that the
+  generic design actually resolves and runs a real backend set, not
+  just in theory. Covers: a query only runs once it parses, a leading
+  blank line at the primary prompt is a no-op, a blank line mid-buffer
+  forces a stuck (never-going-to-parse) query through and shows the
+  real error instead of hanging forever, the prompt returns to normal
   afterward for the next query, and the `iex -S mix scry.iex` startup
   hint shows under plain `mix test` (no real `iex` session here
   either). `ExUnit.CaptureIO.capture_io/2`'s own `input` argument feeds

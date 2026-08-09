@@ -141,9 +141,10 @@ defmodule Scry.Test.Core.MixProject do
   end
 
   defp description do
-    "Shared test/benchmark fixtures for scry_core: one seed dataset, servable through three " <>
-      "real Scry.Core.EngineBehaviour backends (in-memory, ETS, SQLite) via Scry.Test.Core.Conn, " <>
-      "plus mix scry.query/scry.iex/scry.bench for exercising them."
+    "Shared test/benchmark fixtures for scry_core: one seed dataset, servable through four " <>
+      "real Scry.Core.EngineBehaviour backends (in-memory, ETS, SQLite, Postgres) via " <>
+      "Scry.Test.Core.Conn, plus scry_core's own mix scry.query/scry.iex (configured here) " <>
+      "and this package's own mix scry.bench for exercising them."
   end
 
   defp package do

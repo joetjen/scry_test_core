@@ -1,7 +1,13 @@
 defmodule Mix.Tasks.Scry.QueryTest do
   @moduledoc """
-  `mix scry.query` -- both ways of supplying a query (an argument, a
-  `--file`), both usage errors (neither given, both given), a parse
+  `Mix.Tasks.Scry.Query` now lives in `scry_core` (a generic, config-
+  driven task any project depending on `scry_core` gets for free) --
+  this suite exercises it through this package's own `config/
+  config.exs` (`Scry.Test.Core.Conn`'s four constructors registered as
+  named backends), which doubles as the end-to-end proof that the
+  generic design actually resolves and runs a real backend set, not
+  just in theory. Covers both ways of supplying a query (an argument,
+  a `--file`), both usage errors (neither given, both given), a parse
   error's own formatting (`Ichor.Error.format/1`, not a raw struct
   dump), and `--backend` picking a different `Scry.Test.Core.Conn`
   constructor (defaulting to `in_memory`) without changing the answer.
