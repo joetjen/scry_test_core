@@ -2,12 +2,13 @@
 
 Shared test/benchmark fixtures for
 [`scry_core`](https://github.com/joetjen/scry_core): one seed dataset
-(`Scry.Test.Core.Seed`), servable through three real `Scry.Core.
+(`Scry.Test.Core.Seed`), servable through four real `Scry.Core.
 EngineBehaviour` backends via `Scry.Test.Core.Conn`:
 
 - `Conn.in_memory/1` → [`scry_engine_inmemory`](https://github.com/joetjen/scry_engine_inmemory)'s `Scry.Engine.InMemory` (no pushdown at all)
 - `Conn.ets/1` → [`scry_engine_ets`](https://github.com/joetjen/scry_engine_ets)'s `Scry.Engine.ETS` (real O(1) key-lookup pushdown)
 - `Conn.sqlite/1` → [`scry_engine_exqlite`](https://github.com/joetjen/scry_engine_exqlite)'s `Scry.Engine.Exqlite` (real SQL `WHERE`-clause pushdown)
+- `Conn.postgres/1` → [`scry_engine_postgrex`](https://github.com/joetjen/scry_engine_postgrex)'s `Scry.Engine.Postgrex` (real SQL pushdown against a real, external Postgres -- the only constructor needing `docker compose up -d` first; see below)
 
 Plus `mix scry.query`/`mix scry.iex`/`mix scry.bench` for exercising
 them. Not for production use.
@@ -38,8 +39,10 @@ rows = Scry.Core.Cursor.to_list(cursor)
 # rows == [%{"name" => "Alice"}]
 ```
 
-Swap `in_memory/1` for `ets/1` or `sqlite/1` above to run the exact
-same query against a different backend -- no other code changes.
+Swap `in_memory/1` for `ets/1`, `sqlite/1`, or `postgres/1` above to run
+the exact same query against a different backend -- no other code
+changes (`postgres/1` additionally needs a real Postgres reachable,
+see below).
 `Scry.Core.Executor.run/3,4` returns a lazy `Scry.Core.Cursor.t()`, not
 a materialized list -- see `scry_core`'s own `Scry.Core.Cursor`
 moduledoc for the full pull-based API (`next/1`, `take/2`, `skip/1,2`,
@@ -54,10 +57,24 @@ realistic, multi-table dataset -- `users`/`products`/`orders`/
 an empty connection, for exploring or testing against something with
 real relationships to correlate across without hand-authoring your own
 fixture rows first. `Scry.Test.Core.Seed`'s own moduledoc documents the
-exact shape of every table; the same dataset backs all three engines,
+exact shape of every table; the same dataset backs all four engines,
 so a query run against each is directly comparable (see
-`test/scry/test/core/parity_test.exs`'s own genuine 3-way parity
-tests).
+`test/scry/test/core/parity_test.exs`'s own genuine 3-way parity tests
+for `in_memory`/`ets`/`sqlite`, and `postgres_parity_test.exs` for
+`postgres/1`'s own, kept separate -- see that file's own moduledoc for
+why).
+
+### `postgres/1` needs a real, external Postgres
+
+Unlike the other three (freely, automatically isolated per call),
+`postgres/1` is backed by a real, persistent, external Postgres --
+`docker compose up -d` (this package's own root `docker-compose.yml`,
+`localhost:5433` by default) before using it. `Conn.postgres/1`'s own
+moduledoc has the full reasoning for the one real way it differs from
+the other three (idempotent, not concurrency-safe with itself). Its own
+tests are tagged `:postgres` and excluded from the default `mix test`/
+`mix precommit` for exactly this reason -- run `mix test.postgres`
+(with Docker up) to include them.
 
 ```elixir
 {engine, conn} = Scry.Test.Core.Conn.in_memory()
@@ -83,9 +100,10 @@ $ mix scry.query --file path/to/query.scry
 $ mix scry.query --backend ets 'SELECT users WHERE id = 1 { name }'
 ```
 
-`--backend` picks `in_memory` (the default), `ets`, or `sqlite` --
-same seed data either way, only *how* the answer is produced changes.
-`mix help scry.query` has the full usage.
+`--backend` picks `in_memory` (the default), `ets`, `sqlite`, or
+`postgres` (needs `docker compose up -d` first) -- same seed data
+either way, only *how* the answer is produced changes. `mix help
+scry.query` has the full usage.
 
 ### `mix scry.iex` -- an interactive, `iex`-like query prompt
 
@@ -161,6 +179,15 @@ numbers alone). `mix help scry.bench` has the full usage, including
 exactly what each reported number means and why `Scry.Test.Core.Conn.
 in_memory/1` is deliberately never part of this comparison at
 benchmark scale.
+
+No `--compare-postgres` yet, deliberately -- this task generates its
+benchmark dataset at millions of rows via SQLite's own low-level
+prepared-statement NIF loop, and loading that same volume into a real,
+network-attached Postgres row-by-row would be dramatically slower
+without `COPY`-based bulk loading, a real, separate piece of work.
+`Conn.postgres/1` itself only ever loads `Seed.data()`'s own small,
+fixed fixture (a handful of rows per table) -- fine as ordinary
+`INSERT`s, not a benchmark-scale concern.
 
 ## Installation
 

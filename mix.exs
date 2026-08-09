@@ -6,9 +6,10 @@ defmodule Scry.Test.Core.MixProject do
   # `mix precommit` includes `test` as a step; without this, Mix runs
   # the whole alias chain (including `mix test`) in :dev, and `mix test`
   # itself refuses to run outside :test when invoked as a sub-task
-  # rather than the top-level command.
+  # rather than the top-level command. `test.postgres` needs the same
+  # treatment, for the same reason.
   def cli do
-    [preferred_envs: [precommit: :test]]
+    [preferred_envs: [precommit: :test, "test.postgres": :test]]
   end
 
   def project do
@@ -67,15 +68,17 @@ defmodule Scry.Test.Core.MixProject do
 
       # === BACKEND ENGINES ===
       # Local path dependencies, same reasoning as scry_core above --
-      # none of these three are published to Hex yet either. This
+      # none of these four are published to Hex yet either. This
       # package's own Scry.Test.Core.Conn exposes one constructor per
-      # engine (in_memory/1, ets/1, sqlite/1), all sharing the same seed
-      # dataset, so every scry_<kind> package gets real parity testing
-      # (and a real speed/memory comparison, via mix scry.bench) across
-      # all three "for real" -- not just the trivial in-memory case.
+      # engine (in_memory/1, ets/1, sqlite/1, postgres/1), all sharing
+      # the same seed dataset, so every scry_<kind> package gets real
+      # parity testing (and a real speed/memory comparison, via mix
+      # scry.bench) across all four "for real" -- not just the trivial
+      # in-memory case.
       {:scry_engine_inmemory, path: "../scry_engine_inmemory"},
       {:scry_engine_ets, path: "../scry_engine_ets"},
       {:scry_engine_exqlite, path: "../scry_engine_exqlite"},
+      {:scry_engine_postgrex, path: "../scry_engine_postgrex"},
 
       # === CODE QUALITY & STATIC ANALYSIS ===
       {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
@@ -103,7 +106,12 @@ defmodule Scry.Test.Core.MixProject do
       # (which had to stay out of a real downstream production build),
       # there's no equivalent boundary to protect here; a plain,
       # unscoped dependency is the right shape.
-      {:exqlite, "~> 0.30"}
+      {:exqlite, "~> 0.30"},
+
+      # `Conn.postgres/1` issues real `Postgrex.query!/3` DDL/INSERT
+      # calls directly (loading `Seed.data()` into a real Postgres),
+      # same unscoped reasoning as `exqlite` above.
+      {:postgrex, "~> 0.22"}
       # ExDoc is invoked via `MIX_ENV=dev mix docs`
     ]
   end
@@ -119,7 +127,16 @@ defmodule Scry.Test.Core.MixProject do
         "sobelow",
         "test",
         "dialyzer"
-      ]
+      ],
+      # `Conn.postgres/1` (and its own `postgres_parity_test.exs`/
+      # `postgres_conn_test.exs`) are tagged `:postgres` and excluded
+      # by default (`test/test_helper.exs`) specifically so `mix test`/
+      # `mix precommit` stay zero-external-setup for anyone who merely
+      # depends on this package for the other three backends. Run
+      # `docker compose up -d` (this package's own root
+      # `docker-compose.yml`) then `mix test.postgres` whenever a
+      # change touches `Conn.postgres/1` or `scry_engine_postgrex`.
+      "test.postgres": ["test --include postgres"]
     ]
   end
 

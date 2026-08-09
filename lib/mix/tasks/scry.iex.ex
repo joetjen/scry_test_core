@@ -17,10 +17,11 @@ defmodule Mix.Tasks.Scry.Iex do
 
   `--backend` picks which `Scry.Test.Core.Conn` constructor serves
   every query for the whole session -- `in_memory` (the default,
-  `Scry.Engine.InMemory`), `ets` (`Scry.Engine.ETS`), or `sqlite`
-  (`Scry.Engine.Exqlite`); `mix scry.query`'s own moduledoc has the
-  full reasoning (same seed data either way, only *how* the answer is
-  produced changes).
+  `Scry.Engine.InMemory`), `ets` (`Scry.Engine.ETS`), `sqlite`
+  (`Scry.Engine.Exqlite`), or `postgres` (`Scry.Engine.Postgrex`, needs
+  a real, externally running Postgres -- `docker compose up -d` first);
+  `mix scry.query`'s own moduledoc has the full reasoning (same seed
+  data either way, only *how* the answer is produced changes).
 
   A query is only run once it parses -- pressing Enter mid-query (a
   still-incomplete `SELECT ... { ... }`, say) switches the prompt to
@@ -71,7 +72,8 @@ defmodule Mix.Tasks.Scry.Iex do
   @backends %{
     "in_memory" => &Scry.Test.Core.Conn.in_memory/0,
     "ets" => &Scry.Test.Core.Conn.ets/0,
-    "sqlite" => &Scry.Test.Core.Conn.sqlite/0
+    "sqlite" => &Scry.Test.Core.Conn.sqlite/0,
+    "postgres" => &Scry.Test.Core.Conn.postgres/0
   }
 
   @impl Mix.Task
@@ -87,7 +89,9 @@ defmodule Mix.Tasks.Scry.Iex do
         loop("", constructor.())
 
       :error ->
-        Mix.raise("scry.iex: unknown --backend #{name} (expected in_memory, ets, or sqlite)")
+        Mix.raise(
+          "scry.iex: unknown --backend #{name} (expected in_memory, ets, sqlite, or postgres)"
+        )
     end
   end
 

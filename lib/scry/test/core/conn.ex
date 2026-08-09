@@ -1,22 +1,28 @@
 defmodule Scry.Test.Core.Conn do
   @moduledoc """
-  Three constructors, one shared dataset -- each returns a ready
+  Four constructors, one shared dataset -- each returns a ready
   `{engine_module, conn}` pair, straight into `Scry.Core.Executor.run/3,4`'s
   own second and third arguments, backed by a real `Scry.Core.
   EngineBehaviour` implementation instead of this package rolling its
   own (that role now belongs to `scry_engine_inmemory`/`scry_engine_ets`/
-  `scry_engine_exqlite`, each a real, independent package):
+  `scry_engine_exqlite`/`scry_engine_postgrex`, each a real,
+  independent package):
 
     * `in_memory/1` -- `Scry.Engine.InMemory`, no pushdown at all.
     * `ets/1` -- `Scry.Engine.ETS`, real O(1) key-lookup pushdown (every
       seed table has a declared `id` key, `Scry.Test.Core.Seed.keys/0`).
     * `sqlite/1` -- `Scry.Engine.Exqlite`, a fresh `:memory:` SQLite
       database loaded with the same rows, real `WHERE`-clause pushdown.
+    * `postgres/1` -- `Scry.Engine.Postgrex`, the same rows loaded into
+      a real, external Postgres (see its own doc below for the one real
+      way this constructor differs from the other three).
 
-  All three default to `Scry.Test.Core.Seed.data()` when called with no
-  argument -- the same dataset, three different backends, so a query
+  All four default to `Scry.Test.Core.Seed.data()` when called with no
+  argument -- the same dataset, four different backends, so a query
   run against each is directly comparable (see `test/scry/test/core/
-  parity_test.exs`'s own genuine 3-way parity tests). Passing a custom
+  parity_test.exs`'s own genuine 3-way parity tests, and `test/scry/
+  test/core/postgres_parity_test.exs` for `postgres/1`'s own, kept
+  separate -- see that file's own moduledoc for why). Passing a custom
   `data()` map still works on every constructor, same shape `Conn.new/1`
   used to accept on this package's own now-removed engine.
 
@@ -46,11 +52,39 @@ defmodule Scry.Test.Core.Conn do
   arbitrary query input, so table/column names are interpolated
   directly rather than validated the way `Scry.Engine.Exqlite`'s own
   `execute/3` treats a `source` (untrusted, query-supplied) value.
+
+  **`postgres/1` is genuinely different from the other three in one
+  real way, not just a fourth coat of paint**: `in_memory/1`/`ets/1`
+  are plain in-process data, and `sqlite/1` opens a brand-new
+  `:memory:` database per call -- all three are automatically,
+  freshly isolated on every single call, safe under `async: true` with
+  no extra thought. A real Postgres is a *persistent, shared, external*
+  service instead -- calling `postgres/1` twice hits the *same*
+  physical tables. `postgres_connection_opts/0` always points at the
+  same fixed `public`-schema tables `sqlite/1` conceptually mirrors
+  (`DROP TABLE IF EXISTS ... CASCADE` then recreate, on every call --
+  idempotent and safe to call repeatedly, but genuinely **not** safe to
+  call concurrently with itself). Deliberately not given per-call
+  schema isolation (a `search_path` set to a fresh schema per call):
+  `Scry.Engine.Postgrex.Schema.column_info/2` hardcodes
+  `WHERE table_schema = 'public'` (that package's own accepted scope
+  decision), so a non-`public` schema would make its own introspection
+  -- and therefore the `NOT NULL` gate every pushed-down query needs --
+  silently find nothing. Every test exercising `postgres/1` runs
+  `async: false` for exactly this reason (`test/scry/test/core/
+  postgres_parity_test.exs`/`postgres_conn_test.exs`'s own moduledocs).
+  Also unlike the other three: these tables persist in whatever
+  Postgres `postgres/1` was pointed at until the next call recreates
+  them (or the database is torn down) -- there is no `:memory:`-style
+  automatic cleanup, the same way none of `in_memory/1`/`ets/1`/
+  `sqlite/1` has an explicit `close/1` call site anywhere in this
+  package either.
   """
 
   alias Scry.Engine.ETS
   alias Scry.Engine.Exqlite, as: SqliteEngine
   alias Scry.Engine.InMemory
+  alias Scry.Engine.Postgrex, as: Postgres
   alias Scry.Test.Core.Seed
 
   @typedoc "Keyed by source path (e.g. `[\"orders\"]`), matching `Scry.Core.Query.source`."
@@ -87,6 +121,84 @@ defmodule Scry.Test.Core.Conn do
     Enum.each(data, fn {[table], rows} -> load_table(conn, table, rows) end)
     {SqliteEngine, conn}
   end
+
+  @doc """
+  `{Scry.Engine.Postgrex, conn}`, the same dataset loaded into a real,
+  external Postgres -- a real `Scry.Engine.Postgrex.Conn`, so a query
+  filtering on a plain field genuinely exercises `Scry.Engine.Postgrex`'s
+  own `execute/3` `WHERE`-clause pushdown, not just its full-scan
+  fallback. See this module's own moduledoc for the one real way this
+  constructor differs from the other three (a real, persistent,
+  external service, not a fresh in-process structure per call).
+
+  Connection options come from `PGHOST`/`PGPORT`/`PGUSER`/`PGPASSWORD`/
+  `PGDATABASE`, defaulting to this package's own `docker-compose.yml`
+  service (`localhost:5433`, user/password `scry`, database
+  `scry_test_core`) -- a deliberately different host port and database
+  name than `scry_engine_postgrex`'s own compose service/test suite
+  uses, so both containers can run at once and the two packages' test
+  data never collide even if pointed at the same physical Postgres.
+  """
+  @spec postgres(data()) :: {module(), Postgres.Conn.t()}
+  def postgres(data \\ Seed.data()) when is_map(data) do
+    {:ok, conn} = Postgres.Conn.open(postgres_connection_opts())
+    Enum.each(data, fn {[table], rows} -> load_postgres_table(conn, table, rows) end)
+    {Postgres, conn}
+  end
+
+  defp postgres_connection_opts do
+    [
+      hostname: System.get_env("PGHOST", "localhost"),
+      port: String.to_integer(System.get_env("PGPORT", "5433")),
+      username: System.get_env("PGUSER", "scry"),
+      password: System.get_env("PGPASSWORD", "scry"),
+      database: System.get_env("PGDATABASE", "scry_test_core")
+    ]
+  end
+
+  defp load_postgres_table(_conn, _table, []), do: :ok
+
+  # Mirrors `load_table/3` (the `sqlite/1` internal below) in structure
+  # -- same alphabetical-column-order inference from the first row,
+  # same blanket `NOT NULL` -- but issues real `Postgrex.query!/3`
+  # calls instead of low-level `Exqlite.Sqlite3` NIF calls. `DROP TABLE
+  # IF EXISTS ... CASCADE` before every `CREATE TABLE` is what makes
+  # this constructor idempotent (safe to call repeatedly against the
+  # same real, persistent database) -- this module's own moduledoc has
+  # the full reasoning for why that's *not* the same as safe to call
+  # concurrently with itself.
+  defp load_postgres_table(%Postgres.Conn{pool: pool}, table, [first_row | _] = rows) do
+    columns = first_row |> Map.keys() |> Enum.sort()
+    column_list = Enum.join(columns, ", ")
+
+    column_defs =
+      columns
+      |> Enum.map(&"#{&1} #{postgres_sql_type(Map.fetch!(first_row, &1))} NOT NULL")
+      |> Enum.join(", ")
+
+    Postgrex.query!(pool, "DROP TABLE IF EXISTS #{table} CASCADE", [])
+    Postgrex.query!(pool, "CREATE TABLE #{table} (#{column_defs})", [])
+
+    placeholders =
+      columns |> Enum.with_index(1) |> Enum.map(fn {_column, i} -> "$#{i}" end) |> Enum.join(", ")
+
+    Enum.each(rows, fn row ->
+      Postgrex.query!(
+        pool,
+        "INSERT INTO #{table} (#{column_list}) VALUES (#{placeholders})",
+        Enum.map(columns, &Map.get(row, &1))
+      )
+    end)
+  end
+
+  # Elixir floats are 64-bit -- `DOUBLE PRECISION`/`float8` is the
+  # faithful Postgres match, not `REAL`/`float4` (SQLite's own `REAL`
+  # has no such distinction to get wrong, since it stores every
+  # non-integer number as a native 8-byte IEEE float regardless of the
+  # declared type name).
+  defp postgres_sql_type(value) when is_integer(value), do: "INTEGER"
+  defp postgres_sql_type(value) when is_float(value), do: "DOUBLE PRECISION"
+  defp postgres_sql_type(value) when is_binary(value), do: "TEXT"
 
   defp load_table(_conn, _table, []), do: :ok
 

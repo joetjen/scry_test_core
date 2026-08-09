@@ -21,11 +21,14 @@ defmodule Mix.Tasks.Scry.Query do
 
   `--backend` picks which `Scry.Test.Core.Conn` constructor serves the
   query -- `in_memory` (the default, `Scry.Engine.InMemory`, no
-  pushdown), `ets` (`Scry.Engine.ETS`, real key-lookup pushdown), or
-  `sqlite` (`Scry.Engine.Exqlite`, real SQL pushdown). All three share
-  the exact same seed data (`Scry.Test.Core.Seed`), so the same query
-  returns the same rows regardless of which one is picked -- this flag
-  changes *how* the answer is produced, never *what* it is.
+  pushdown), `ets` (`Scry.Engine.ETS`, real key-lookup pushdown),
+  `sqlite` (`Scry.Engine.Exqlite`, real SQL pushdown), or `postgres`
+  (`Scry.Engine.Postgrex`, real SQL pushdown against a real, externally
+  running Postgres -- `docker compose up -d` first, this package's own
+  root `docker-compose.yml`). All four share the exact same seed data
+  (`Scry.Test.Core.Seed`), so the same query returns the same rows
+  regardless of which one is picked -- this flag changes *how* the
+  answer is produced, never *what* it is.
 
   Always runs against the picked backend's own default seed data --
   there's no flag for supplying different data here; write a short
@@ -39,7 +42,8 @@ defmodule Mix.Tasks.Scry.Query do
   @backends %{
     "in_memory" => &Scry.Test.Core.Conn.in_memory/0,
     "ets" => &Scry.Test.Core.Conn.ets/0,
-    "sqlite" => &Scry.Test.Core.Conn.sqlite/0
+    "sqlite" => &Scry.Test.Core.Conn.sqlite/0,
+    "postgres" => &Scry.Test.Core.Conn.postgres/0
   }
 
   @impl Mix.Task
@@ -63,8 +67,11 @@ defmodule Mix.Tasks.Scry.Query do
     name = switches[:backend] || "in_memory"
 
     case Map.fetch(@backends, name) do
-      {:ok, constructor} -> {:ok, constructor.()}
-      :error -> {:error, "unknown --backend #{name} (expected in_memory, ets, or sqlite)"}
+      {:ok, constructor} ->
+        {:ok, constructor.()}
+
+      :error ->
+        {:error, "unknown --backend #{name} (expected in_memory, ets, sqlite, or postgres)"}
     end
   end
 

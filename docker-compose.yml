@@ -1,0 +1,24 @@
+# A disposable, local Postgres for running Scry.Test.Core.Conn.postgres/1
+# and its own tagged test files (`mix test.postgres`, see README.md) --
+# `docker compose up -d` first. Connection details here are the
+# defaults `Conn.postgres/1` assumes; override via PGHOST/PGPORT/
+# PGUSER/PGPASSWORD/PGDATABASE to point at a different Postgres
+# instead. Deliberately a different host port (5433, not 5432) and
+# database name than `scry_engine_postgrex`'s own compose service uses,
+# so both containers can run at once (e.g. working across both repos)
+# without a port clash, and the two packages' test data never collide
+# even if pointed at the same physical Postgres instance.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: scry
+      POSTGRES_PASSWORD: scry
+      POSTGRES_DB: scry_test_core
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U scry -d scry_test_core"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
