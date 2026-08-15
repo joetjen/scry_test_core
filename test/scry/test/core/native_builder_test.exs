@@ -1,7 +1,7 @@
 defmodule Scry.Test.Core.NativeBuilderTest do
   @moduledoc """
   The first proof, from a genuinely separate downstream package rather
-  than `scry_core`'s own test suite, that impl_spec.md §7's Elixir-
+  than `scry_core`'s own test suite, that the Elixir-
   native front end (`Scry.Core.Query`'s Layer 1 functional API and
   Layer 2's `from/2` macro) works end to end against a real
   `Scry.Core.EngineBehaviour` implementation -- `conn_test.exs`'s own

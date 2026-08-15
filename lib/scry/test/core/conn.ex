@@ -19,7 +19,7 @@ defmodule Scry.Test.Core.Conn do
     * `timescaledb/1` -- `Scry.Engine.Postgrex` again, **entirely
       unmodified**, pointed at a real, external TimescaleDB instead of
       plain Postgres. This exists to answer a real question empirically
-      rather than just assert it: impl_spec.md's own roadmap names
+      rather than just assert it: the roadmap names
       `scry_engine_timescaledb` as a from-scratch adapter meant to
       validate the `scry_reltime` composite (relational + time-series)
       architecture. Investigation found nothing for a dedicated adapter

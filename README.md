@@ -22,9 +22,8 @@ since `scry_core` itself needs one before any real kind library does.
 A future kind library (`scry_time_series`, ...) gets its own
 `scry_test_time_series` alongside it.
 
-Source: <https://github.com/joetjen/scry_test_core>. Specs live in the
-separate [`scry`](https://github.com/joetjen/scry) repository; the
-behaviour every backend implements lives in
+Source: <https://github.com/joetjen/scry_test_core>. The behaviour
+every backend implements lives in
 [`scry_core`](https://github.com/joetjen/scry_core).
 
 ## Usage
@@ -85,7 +84,7 @@ them.
 module `postgres/1` uses, entirely unmodified -- against a real
 TimescaleDB container instead of plain Postgres. This isn't a second
 adapter to maintain: it's the empirical answer to a question
-`impl_spec.md`'s own roadmap left open, that a dedicated
+the roadmap left open, that a dedicated
 `scry_engine_timescaledb` package would validate the `scry_reltime`
 composite (relational + time-series) architecture. TimescaleDB speaks
 the plain Postgres wire protocol, and the language has no

@@ -5,7 +5,7 @@ defmodule Scry.Test.Core.Seed do
   shaped references between them (`orders.user_id` → a `users.id`,
   `order_items.order_id`/`order_items.product_id` → an `orders.id`/
   `products.id`) -- for exercising `WHERE`/`GROUP BY`/aggregates and,
-  especially, nested `SELECT`/correlation (lang_spec.md §6) against
+  especially, nested `SELECT`/correlation against
   something with real relationships to correlate across, not just a
   handful of flat rows. `Scry.Test.Core.Conn`'s own `in_memory/1`,
   `ets/1`, and `sqlite/1` all load this same dataset by default -- one

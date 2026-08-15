@@ -62,8 +62,7 @@ defmodule Scry.Test.Core.MixProject do
       # tests parse queries against), not test-only, since implementing
       # Scry.Core.EngineBehaviour genuinely needs its types at compile
       # time. Switch to a `~> x.y` Hex requirement once scry_core is
-      # actually published (impl_spec.md's own dependency-versions
-      # convention).
+      # actually published.
       {:scry_core, path: "../scry_core"},
 
       # === BACKEND ENGINES ===
