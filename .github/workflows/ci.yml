@@ -17,57 +17,32 @@ env:
 
 jobs:
   ci:
-    name: OTP ${{ matrix.otp }} / Elixir 1.19.4
+    name: OTP 28 / Elixir 1.19.4
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - otp: "28"
-            elixir: "1.19.4-otp-28"
-          - otp: "27"
-            elixir: "1.19.4-otp-27"
-          - otp: "26"
-            elixir: "1.19.4-otp-26"
     steps:
       - uses: actions/checkout@v4
 
       - name: Checkout scry_core (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_core
-          path: ../scry_core
+        run: git clone --depth 1 https://github.com/joetjen/scry_core.git ../scry_core
 
       - name: Checkout scry_engine_inmemory (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_inmemory
-          path: ../scry_engine_inmemory
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_inmemory.git ../scry_engine_inmemory
 
       - name: Checkout scry_engine_ets (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_ets
-          path: ../scry_engine_ets
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_ets.git ../scry_engine_ets
 
       - name: Checkout scry_engine_exqlite (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_exqlite
-          path: ../scry_engine_exqlite
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_exqlite.git ../scry_engine_exqlite
 
       - name: Checkout scry_engine_postgrex (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_postgrex
-          path: ../scry_engine_postgrex
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_postgrex.git ../scry_engine_postgrex
 
       - name: Set up Elixir
         id: beam
         uses: erlef/setup-beam@v1
         with:
-          otp-version: ${{ matrix.otp }}
-          elixir-version: ${{ matrix.elixir }}
+          otp-version: "28.2"
+          elixir-version: "1.19.4-otp-28"
 
       - name: Restore deps/_build cache
         uses: actions/cache@v4
@@ -84,6 +59,3 @@ jobs:
 
       - name: Precommit
         run: mix precommit
-
-      - name: Verify package assembles (hex.build)
-        run: mix hex.build

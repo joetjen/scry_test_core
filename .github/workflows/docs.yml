@@ -21,34 +21,19 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Checkout scry_core (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_core
-          path: ../scry_core
+        run: git clone --depth 1 https://github.com/joetjen/scry_core.git ../scry_core
 
       - name: Checkout scry_engine_inmemory (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_inmemory
-          path: ../scry_engine_inmemory
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_inmemory.git ../scry_engine_inmemory
 
       - name: Checkout scry_engine_ets (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_ets
-          path: ../scry_engine_ets
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_ets.git ../scry_engine_ets
 
       - name: Checkout scry_engine_exqlite (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_exqlite
-          path: ../scry_engine_exqlite
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_exqlite.git ../scry_engine_exqlite
 
       - name: Checkout scry_engine_postgrex (path dependency)
-        uses: actions/checkout@v4
-        with:
-          repository: joetjen/scry_engine_postgrex
-          path: ../scry_engine_postgrex
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_postgrex.git ../scry_engine_postgrex
 
       - name: Set up Elixir
         id: beam
