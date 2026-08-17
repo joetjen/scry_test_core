@@ -25,17 +25,20 @@ jobs:
       - name: Checkout scry_core (path dependency)
         run: git clone --depth 1 https://github.com/joetjen/scry_core.git ../scry_core
 
-      - name: Checkout scry_engine_inmemory (path dependency)
-        run: git clone --depth 1 https://github.com/joetjen/scry_engine_inmemory.git ../scry_engine_inmemory
-
       - name: Checkout scry_engine_ets (path dependency)
         run: git clone --depth 1 https://github.com/joetjen/scry_engine_ets.git ../scry_engine_ets
 
       - name: Checkout scry_engine_exqlite (path dependency)
         run: git clone --depth 1 https://github.com/joetjen/scry_engine_exqlite.git ../scry_engine_exqlite
 
+      - name: Checkout scry_engine_inmemory (path dependency)
+        run: git clone --depth 1 https://github.com/joetjen/scry_engine_inmemory.git ../scry_engine_inmemory
+
       - name: Checkout scry_engine_postgrex (path dependency)
         run: git clone --depth 1 https://github.com/joetjen/scry_engine_postgrex.git ../scry_engine_postgrex
+
+      - name: Checkout dextrin (path dependency)
+        run: git clone --depth 1 https://github.com/joetjen/dextrin.git ../dextrin
 
       - name: Set up Elixir
         id: beam
